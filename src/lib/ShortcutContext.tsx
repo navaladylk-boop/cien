@@ -94,9 +94,11 @@ export const ShortcutProvider: React.FC<{ children: ReactNode }> = ({ children }
         if (saveHandlerRef.current) {
           saveHandlerRef.current();
         } else {
-          // Fallback: search for active submit button
-          const submitBtn = document.querySelector<HTMLButtonElement>('button[type="submit"], [data-shortcut="f2-save"]');
-          if (submitBtn) {
+          // Fallback: search for active submit button that is NOT disabled
+          const submitBtn = document.querySelector<HTMLButtonElement>(
+            'button[type="submit"]:not(:disabled), [data-shortcut="f2-save"]:not(:disabled)'
+          );
+          if (submitBtn && !submitBtn.disabled) {
             submitBtn.click();
           }
         }

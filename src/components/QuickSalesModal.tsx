@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
-import { ShoppingCart, X, Plus, Trash2, CheckCircle2, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ShoppingCart, X, Plus, Trash2, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { Customer, Product, AppSettings, Company, SaleItem } from '../types';
 import { StorageService } from '../lib/storage';
+import { generateUniqueRequestId } from '../lib/supabase';
+import { useShortcuts } from '../lib/ShortcutContext';
 
 interface QuickSalesModalProps {
   customers: Customer[];
@@ -29,6 +31,10 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
   const [paidAmount, setPaidAmount] = useState<number>(0);
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const isSubmittingRef = useRef<boolean>(false);
+  const [saveRequestId, setSaveRequestId] = useState<string>(() => generateUniqueRequestId('sale_quick'));
+
+  const { registerSaveHandler } = useShortcuts();
 
   // Item row draft
   const [selectedProdId, setSelectedProdId] = useState<string>('');
@@ -36,6 +42,18 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
   const [unitPrice, setUnitPrice] = useState<number>(0);
 
   const selectedCustomer = customers.find((c) => c.id === selectedCustomerId);
+
+  // Register F2 keyboard shortcut to trigger Quick Sale save
+  useEffect(() => {
+    registerSaveHandler(() => {
+      if (!isSubmittingRef.current) {
+        handleSave();
+      }
+    });
+    return () => {
+      registerSaveHandler(null);
+    };
+  }, [selectedCustomerId, date, items, paymentType, paidAmount, notes, saveRequestId, company]);
 
   const handleSelectProduct = (prodId: string) => {
     setSelectedProdId(prodId);
@@ -73,6 +91,11 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
   const grandTotal = subtotal;
 
   const handleSave = async () => {
+    // Instant double-submit lock check
+    if (isSubmitting || isSubmittingRef.current) {
+      return;
+    }
+
     if (!selectedCustomer) {
       onError('Please select a valid customer.');
       return;
@@ -82,9 +105,11 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
       return;
     }
 
+    isSubmittingRef.current = true;
     setIsSubmitting(true);
     try {
       const res = await StorageService.createSaleInvoiceAsync({
+        requestId: saveRequestId,
         companyId: company?.id || 'comp-1',
         date,
         customerId: selectedCustomer.id,
@@ -101,13 +126,15 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
 
       if (res.success && res.data) {
         onSuccess(`Quick Sales Invoice ${res.data.invoiceNumber} created successfully!`);
+        setSaveRequestId(generateUniqueRequestId('sale_quick'));
         onClose();
       } else {
         onError(res.error || 'Failed to save sales invoice.');
       }
     } catch (err: any) {
-      onError(err.message || 'An unexpected error occurred while saving invoice.');
+      onError(err?.message || 'An unexpected error occurred while saving invoice.');
     } finally {
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -128,7 +155,8 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-blue-200 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+            disabled={isSubmitting}
+            className="p-1.5 text-blue-200 hover:text-white hover:bg-white/10 disabled:opacity-50 rounded-lg transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -208,7 +236,7 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
                 <button
                   type="button"
                   onClick={handleAddItem}
-                  disabled={!selectedProdId}
+                  disabled={!selectedProdId || isSubmitting}
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white p-1.5 rounded-lg flex items-center justify-center disabled:opacity-50 cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
@@ -246,7 +274,8 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
                       <td className="p-2.5 text-center">
                         <button
                           onClick={() => handleRemoveItem(idx)}
-                          className="text-rose-500 hover:text-rose-700 p-1 cursor-pointer"
+                          disabled={isSubmitting}
+                          className="text-rose-500 hover:text-rose-700 disabled:opacity-50 p-1 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -281,7 +310,7 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
                 step="0.01"
                 value={paidAmount}
                 onChange={(e) => setPaidAmount(Number(e.target.value))}
-                disabled={paymentType === 'CREDIT'}
+                disabled={paymentType === 'CREDIT' || isSubmitting}
                 placeholder={grandTotal.toString()}
                 className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-slate-50 focus:bg-white disabled:opacity-50"
               />
@@ -301,17 +330,28 @@ export const QuickSalesModal: React.FC<QuickSalesModalProps> = ({
           <div className="flex items-center gap-3">
             <button
               onClick={onClose}
-              className="px-4 py-2 border border-slate-300 rounded-xl font-bold text-slate-700 hover:bg-slate-200 cursor-pointer"
+              disabled={isSubmitting}
+              className="px-4 py-2 border border-slate-300 rounded-xl font-bold text-slate-700 hover:bg-slate-200 disabled:opacity-50 cursor-pointer"
             >
               Cancel
             </button>
             <button
               onClick={handleSave}
               disabled={isSubmitting || items.length === 0}
-              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md flex items-center gap-2 disabled:opacity-50 cursor-pointer"
+              data-shortcut="f2-save"
+              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-md flex items-center gap-2 cursor-pointer transition-all active:scale-95"
             >
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Save Invoice (F2)</span>
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Saving...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Save Invoice (F2)</span>
+                </>
+              )}
             </button>
           </div>
         </div>

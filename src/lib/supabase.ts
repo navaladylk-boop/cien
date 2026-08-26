@@ -111,8 +111,8 @@ export async function testSupabaseConnection(url?: string, key?: string): Promis
   if (!credentials.url || !credentials.key) {
     return {
       success: false,
-      url: credentials.url,
-      message: 'Supabase URL or Anon Public Key is missing.'
+      url: credentials.url || '',
+      message: 'Supabase URL or Anon Public Key is missing. Please configure database credentials in Settings.'
     };
   }
 
@@ -127,100 +127,97 @@ export async function testSupabaseConnection(url?: string, key?: string): Promis
   try {
     const client = createClient(credentials.url, credentials.key);
     
-    // 1. Test product table READ query
-    const { data: prodData, error: prodError } = await client
-      .from('busy_ufo_products')
+    // Strictly READ-ONLY query: Probe 'companies' table with SELECT id LIMIT 1
+    // NEVER perform any INSERT, UPDATE, or DELETE on production tables during health checks
+    const { data: compData, error: compError } = await client
+      .from('companies')
       .select('id')
       .limit(1);
 
-    if (prodError) {
-      if (prodError.code === 'PGRST116' || prodError.message.includes('relation') || prodError.message.includes('does not exist')) {
+    if (compError) {
+      if (
+        compError.code === 'PGRST116' ||
+        compError.code === '42P01' ||
+        compError.message?.includes('relation') ||
+        compError.message?.includes('does not exist')
+      ) {
         return {
           success: false,
           url: credentials.url,
-          message: 'Connected to Supabase, but tables have not been created yet. Please copy and execute the SQL Schema Script in the Supabase SQL Editor.',
-          details: prodError.message
+          message: 'Connected to Supabase, but schema tables have not been created yet. Please execute the SQL Schema Script in the Supabase SQL Editor.',
+          details: compError.message
         };
       }
-      if (prodError.message.includes('JWT') || prodError.code === 'PGRST301') {
+      if (
+        compError.message?.includes('JWT') ||
+        compError.message?.includes('expired') ||
+        compError.code === 'PGRST301'
+      ) {
         return {
           success: false,
           url: credentials.url,
-          message: 'Invalid Anon Public Key. Please check the anon key copied from Supabase Project Settings -> API.',
-          details: prodError.message
+          message: 'Invalid Anon Public Key or expired session. Please check the anon key copied from Supabase Project Settings -> API.',
+          details: compError.message
         };
       }
-      return {
-        success: false,
-        url: credentials.url,
-        message: `Supabase query returned error: ${prodError.message}`,
-        details: prodError.message
-      };
-    }
-
-    // 2. Ensure company record exists in Supabase so foreign key constraints pass
-    const { data: existingComp } = await client.from('companies').select('id').eq('id', 'comp-1').maybeSingle();
-    if (!existingComp) {
-      await client.from('companies').insert({
-        id: 'comp-1',
-        company_name: 'Unnamed Company',
-        short_name: 'CMP',
-        is_active: true
-      });
-    }
-
-    // 3. Test product table WRITE (upsert) permission to verify RLS is disabled or allows inserts
-    const testPingId = '__connection_test_ping__';
-    const { error: writeError } = await client
-      .from('busy_ufo_products')
-      .upsert({
-        id: testPingId,
-        code: 'TEST-PING',
-        name: 'Supabase Sync Connection Test',
-        cost_price: 0,
-        selling_price: 0,
-        current_stock: 0,
-        reorder_level: 0,
-        company_id: 'comp-1'
-      }, { onConflict: 'id' });
-
-    if (writeError) {
-      if (writeError.message.includes('row-level security') || writeError.code === '42501') {
+      if (
+        compError.code === '42501' ||
+        compError.message?.includes('row-level security') ||
+        compError.message?.includes('permission denied')
+      ) {
         return {
           success: false,
           url: credentials.url,
-          message: 'Read access works, BUT Save/Write access is BLOCKED by Supabase Row Level Security (RLS). Please run "ALTER TABLE busy_ufo_products DISABLE ROW LEVEL SECURITY;" in your Supabase SQL Editor.',
-          details: writeError.message
+          message: 'Supabase connected, but read access is restricted by Row Level Security (RLS) policies.',
+          details: compError.message
         };
       }
       return {
         success: false,
         url: credentials.url,
-        message: `Read access works, but Write access failed: ${writeError.message}`,
-        details: writeError.message
+        message: `Supabase query returned error: ${compError.message}`,
+        details: compError.message
       };
     }
 
-    // Clean up test ping record
-    await client.from('busy_ufo_products').delete().eq('id', testPingId);
+    // Read-only status checks on standard ERP tables (zero writes, zero deletes)
+    const [prodCheck, custCheck, suppCheck, saleCheck, userCheck] = await Promise.allSettled([
+      client.from('busy_ufo_products').select('id').limit(1),
+      client.from('busy_ufo_customers').select('id').limit(1),
+      client.from('busy_ufo_suppliers').select('id').limit(1),
+      client.from('busy_ufo_sales').select('id').limit(1),
+      client.from('app_users').select('id').limit(1)
+    ]);
+
+    const isOk = (res: PromiseSettledResult<{ error: any }>) =>
+      res.status === 'fulfilled' && !res.value.error;
 
     return {
       success: true,
       url: credentials.url,
-      message: 'Supabase connection verified! BOTH Read and Write (Save) access are fully active.',
+      message: 'Supabase connection verified successfully. Read-only health check passed.',
       tableStatus: {
-        products: true,
-        customers: true,
-        suppliers: true,
-        sales: true,
-        users: true
+        products: isOk(prodCheck),
+        customers: isOk(custCheck),
+        suppliers: isOk(suppCheck),
+        sales: isOk(saleCheck),
+        users: isOk(userCheck)
       }
     };
   } catch (err: any) {
+    const errorMsg = err?.message || String(err);
+    if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError') || errorMsg.includes('fetch')) {
+      return {
+        success: false,
+        url: credentials.url,
+        message: 'Unable to connect to Supabase. Please check your internet connection.',
+        details: errorMsg
+      };
+    }
     return {
       success: false,
       url: credentials.url,
-      message: `Failed to connect to Supabase: ${err?.message || 'Network error'}`,
+      message: `Failed to connect to Supabase: ${errorMsg}`,
       details: String(err)
     };
   }
@@ -229,7 +226,7 @@ export async function testSupabaseConnection(url?: string, key?: string): Promis
 async function ensureCompanyExists(client: SupabaseClient, companyId?: string): Promise<void> {
   const compId = companyId || 'comp-1';
   try {
-    // Check if the company already exists in Supabase
+    // Read-only check if the company already exists in Supabase
     const { data: existing, error } = await client
       .from('companies')
       .select('id')
@@ -241,33 +238,11 @@ async function ensureCompanyExists(client: SupabaseClient, companyId?: string): 
       return;
     }
 
-    if (existing) {
-      // Company already exists, DO NOT OVERWRITE
-      return;
+    if (!existing) {
+      console.warn(`Referenced company "${compId}" not found in Supabase.`);
     }
-
-    // Company does not exist, insert a placeholder to satisfy foreign keys
-    let compName = 'Unnamed Company';
-    let shortName = 'CMP';
-
-    const rawCompanies = localStorage.getItem('busy_ufo_companies');
-    if (rawCompanies) {
-      const companies = JSON.parse(rawCompanies);
-      const matched = companies.find((c: any) => c.id === compId);
-      if (matched) {
-        compName = matched.companyName || matched.company_name || compName;
-        shortName = matched.shortName || matched.short_name || shortName;
-      }
-    }
-
-    await client.from('companies').insert({
-      id: compId,
-      company_name: compName,
-      short_name: shortName,
-      is_active: true
-    });
   } catch (e) {
-    console.warn('Failed to ensure company row in Supabase:', e);
+    console.warn('Failed to verify company row in Supabase:', e);
   }
 }
 

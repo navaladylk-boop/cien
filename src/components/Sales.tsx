@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Plus,
   Search,
@@ -13,7 +13,8 @@ import {
   MessageCircle,
   DollarSign,
   Calendar,
-  Package
+  Package,
+  Loader2
 } from 'lucide-react';
 import {
   SaleInvoice,
@@ -29,6 +30,8 @@ import { shareInvoiceViaWhatsApp } from '../lib/whatsapp';
 import { SearchableCustomerSelect, SearchableProductSelect } from './SearchableSelect';
 import { handleEnterKeyNavigation } from '../lib/keyboardNav';
 import { WhatsAppMessageModal } from './WhatsAppMessageModal';
+import { generateUniqueRequestId } from '../lib/supabase';
+import { useShortcuts } from '../lib/ShortcutContext';
 
 interface SalesProps {
   sales: SaleInvoice[];
@@ -87,6 +90,13 @@ export const Sales: React.FC<SalesProps> = ({
   const canEdit = checkPermission(session?.effectivePermissions, 'sales', 'edit');
   const canDelete = checkPermission(session?.effectivePermissions, 'sales', 'delete');
   const canPrint = checkPermission(session?.effectivePermissions, 'sales', 'print');
+
+  // Saving lock & stable request ID state for double-submit protection (F2 & button)
+  const [isSaving, setIsSaving] = useState(false);
+  const isSavingRef = useRef(false);
+  const [saveRequestId, setSaveRequestId] = useState<string>('');
+
+  const { registerSaveHandler } = useShortcuts();
 
   // Form State for New Invoice
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
@@ -281,6 +291,9 @@ export const Sales: React.FC<SalesProps> = ({
 
   const handleOpenModal = () => {
     setEditingInvoice(null);
+    setSaveRequestId(generateUniqueRequestId('sale'));
+    setIsSaving(false);
+    isSavingRef.current = false;
     setSelectedCustomerId('');
     setCustomCustomerName('Walk-in Cash Customer');
     setInvoiceType('CASH');
@@ -304,6 +317,9 @@ export const Sales: React.FC<SalesProps> = ({
 
   const handleOpenEditModal = (inv: SaleInvoice) => {
     setEditingInvoice(inv);
+    setSaveRequestId('');
+    setIsSaving(false);
+    isSavingRef.current = false;
     setSelectedCustomerId(inv.customerId || '');
     setCustomCustomerName(inv.customerName || 'Walk-in Cash Customer');
     setInvoiceType(inv.type || 'CASH');
@@ -348,8 +364,47 @@ export const Sales: React.FC<SalesProps> = ({
     setIsModalOpen(true);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Register F2 keyboard shortcut to trigger the SAME submit flow
+  useEffect(() => {
+    if (isModalOpen) {
+      registerSaveHandler(() => {
+        if (!isSavingRef.current) {
+          handleSubmit();
+        }
+      });
+    } else {
+      registerSaveHandler(null);
+    }
+    return () => {
+      registerSaveHandler(null);
+    };
+  }, [
+    isModalOpen,
+    isSaving,
+    calculatedItems,
+    grossSubtotal,
+    totalDiscount,
+    grandTotal,
+    finalPaidAmount,
+    dueAmount,
+    invoiceDate,
+    selectedCustomerId,
+    customCustomerName,
+    invoiceType,
+    notes,
+    editingInvoice,
+    saveRequestId
+  ]);
+
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e) {
+      e.preventDefault();
+    }
+
+    // Step 2 & 3: Instant double-submit guard checking both state and synchronous ref lock
+    if (isSaving || isSavingRef.current) {
+      return;
+    }
 
     if (calculatedItems.length === 0) {
       showToast('error', 'Please select at least one valid product.');
@@ -379,6 +434,16 @@ export const Sales: React.FC<SalesProps> = ({
       }
     }
 
+    // Lock immediately before any async call
+    isSavingRef.current = true;
+    setIsSaving(true);
+
+    // Stable request_id per form submission session
+    const currentRequestId = saveRequestId || generateUniqueRequestId('sale');
+    if (!saveRequestId && !editingInvoice) {
+      setSaveRequestId(currentRequestId);
+    }
+
     try {
       if (editingInvoice && onUpdateInvoice) {
         const updated = await onUpdateInvoice(editingInvoice.id, {
@@ -401,8 +466,10 @@ export const Sales: React.FC<SalesProps> = ({
         );
         setIsModalOpen(false);
         setEditingInvoice(null);
+        setSaveRequestId('');
       } else {
         const newInvoice = await onCreateInvoice({
+          requestId: currentRequestId,
           date: invoiceDate,
           customerId: selectedCustomerId || undefined,
           customerName: customCustomerName,
@@ -421,11 +488,15 @@ export const Sales: React.FC<SalesProps> = ({
           `Invoice ${newInvoice.invoiceNumber} created! Stock updated automatically.`
         );
         setIsModalOpen(false);
+        setSaveRequestId('');
         onPrintInvoice(newInvoice);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to save invoice';
       showToast('error', msg);
+    } finally {
+      isSavingRef.current = false;
+      setIsSaving(false);
     }
   };
 
@@ -1089,17 +1160,29 @@ export const Sales: React.FC<SalesProps> = ({
               <div className="flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-4 shrink-0">
                 <button
                   type="button"
+                  disabled={isSaving}
                   onClick={() => setIsModalOpen(false)}
-                  className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer transition-colors"
+                  className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl cursor-pointer transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md flex items-center gap-2 cursor-pointer transition-all active:scale-95"
+                  disabled={isSaving || calculatedItems.length === 0}
+                  data-shortcut="f2-save"
+                  className="px-6 py-2.5 text-sm font-bold bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white rounded-xl shadow-md flex items-center gap-2 cursor-pointer transition-all active:scale-95"
                 >
-                  <CheckCircle2 className="w-4 h-4 text-yellow-400" />
-                  <span>{editingInvoice ? 'Update & Save Changes' : 'Confirm & Save Invoice'}</span>
+                  {isSaving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-yellow-400" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 text-yellow-400" />
+                      <span>{editingInvoice ? 'Update & Save Changes (F2)' : 'Confirm & Save Invoice (F2)'}</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
