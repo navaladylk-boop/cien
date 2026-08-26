@@ -243,6 +243,7 @@ export const AuthService = {
     password: string;
     roleId: string;
     isActive?: boolean;
+    assignedCompanyIds?: string[];
   }): Promise<AppUser> {
     const cleanUsername = data.username.trim();
     const normalized = cleanUsername.toLowerCase();
@@ -289,6 +290,7 @@ export const AuthService = {
       roleId: role.id,
       roleName: role.name,
       isActive: data.isActive !== undefined ? data.isActive : true,
+      assignedCompanyIds: data.assignedCompanyIds || [],
       createdAt: now,
       updatedAt: now
     };
@@ -312,7 +314,7 @@ export const AuthService = {
   },
 
   /**
-   * Updates user details (Full name, Role, Active status).
+   * Updates user details (Full name, Role, Active status, Assigned companies).
    */
   async updateUser(
     userId: string,
@@ -320,6 +322,7 @@ export const AuthService = {
       fullName?: string;
       roleId?: string;
       isActive?: boolean;
+      assignedCompanyIds?: string[];
     }
   ): Promise<AppUser> {
     const users = this.getUsers();
@@ -368,6 +371,7 @@ export const AuthService = {
       roleId: updates.roleId || targetUser.roleId,
       roleName,
       isActive: updates.isActive !== undefined ? updates.isActive : targetUser.isActive,
+      assignedCompanyIds: updates.assignedCompanyIds !== undefined ? updates.assignedCompanyIds : targetUser.assignedCompanyIds,
       updatedAt: now
     };
 
@@ -544,12 +548,18 @@ export const AuthService = {
 
   getUserAssignedCompanies(user: AppUser): Company[] {
     const allCompanies = StorageService.getCompanies().filter((c) => c.isActive);
-    if (user.roleId === 'role-admin' || user.username === 'admin' || user.roleName === 'Administrator') {
+    if (user.roleId === 'role-admin' || user.username.toLowerCase() === 'admin' || user.roleName === 'Administrator') {
       return allCompanies;
     }
+    const allowedIds = new Set<string>();
     if (user.assignedCompanyIds && user.assignedCompanyIds.length > 0) {
-      const filtered = allCompanies.filter((c) => user.assignedCompanyIds?.includes(c.id));
-      if (filtered.length > 0) return filtered;
+      user.assignedCompanyIds.forEach((id) => allowedIds.add(id));
+    }
+    if (user.companyAssignments && user.companyAssignments.length > 0) {
+      user.companyAssignments.forEach((ca) => allowedIds.add(ca.companyId));
+    }
+    if (allowedIds.size > 0) {
+      return allCompanies.filter((c) => allowedIds.has(c.id));
     }
     return allCompanies;
   },
@@ -600,11 +610,11 @@ export const AuthService = {
 
   // --- AUTHENTICATION LOGIN & LOGOUT ---
   /**
-   * Validates username + password and issues session.
+   * Validates username + password and target company authorization, then issues session.
    * Case-insensitive matching on username.
    * Supabase is the single source of truth for accounts.
    */
-  async login(username: string, password: string): Promise<AuthSession> {
+  async login(username: string, password: string, targetCompanyId?: string): Promise<AuthSession> {
     const cleanUsername = username.trim();
     if (!cleanUsername || !password) {
       throw new Error('Please enter both username and password.');
@@ -682,9 +692,33 @@ export const AuthService = {
     if (assignedCompanies.length === 0) {
       throw new Error('No active companies assigned to your user account.');
     }
-    const activeCompany = assignedCompanies[0];
 
-    const assignment = user.companyAssignments?.find((ca) => ca.companyId === activeCompany.id);
+    let activeCompany: Company | undefined;
+    if (targetCompanyId) {
+      const targetCompObj = allCompanies.find((c) => c.id === targetCompanyId);
+      const isAuthorized = assignedCompanies.some((c) => c.id === targetCompanyId);
+
+      if (!isAuthorized) {
+        this.recordAuditLog(
+          'LOGIN_FAILED',
+          'auth',
+          `Unauthorized company login: User ${user.username} tried to access ${targetCompObj?.companyName || targetCompanyId}`,
+          targetCompanyId,
+          user.id,
+          user.username
+        );
+        throw new Error(
+          `Access Denied: User "${user.username}" is not authorized to access "${targetCompObj?.companyName || 'the selected company'}". Please select an authorized company or contact your Administrator.`
+        );
+      }
+      activeCompany = targetCompObj;
+    }
+
+    if (!activeCompany) {
+      activeCompany = assignedCompanies[0];
+    }
+
+    const assignment = user.companyAssignments?.find((ca) => ca.companyId === activeCompany!.id);
     const roleId = assignment?.roleId || user.roleId;
     const overrides = assignment?.permissionOverrides || user.permissionOverrides;
     const role = this.getRoleById(roleId) || SYSTEM_ROLES[0];
@@ -695,10 +729,10 @@ export const AuthService = {
         id: user.id,
         username: user.username,
         fullName: user.fullName,
-        roleId: user.roleId,
-        roleName: user.roleName,
+        roleId: role.id,
+        roleName: role.name,
         isActive: true,
-        isAdmin: user.roleId === 'role-admin'
+        isAdmin: user.roleId === 'role-admin' || user.username === 'admin' || role.id === 'role-admin'
       },
       company: activeCompany,
       assignedCompanies,

@@ -16,7 +16,9 @@ import {
   X,
   Clock,
   Scale,
-  PieChart
+  PieChart,
+  RotateCcw,
+  BookOpen
 } from 'lucide-react';
 import { PageType, AuthSession, PermissionModule } from '../types';
 import { checkPermission } from '../lib/permissions';
@@ -80,10 +82,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
       requiredModule: 'sales'
     },
     {
+      id: 'sales_return',
+      label: 'Sales Return',
+      icon: <RotateCcw className="w-5 h-5 text-rose-300" />,
+      customCheck: checkPermission(perms, 'sales_return', 'view') || checkPermission(perms, 'sales', 'view')
+    },
+    {
       id: 'purchases',
       label: 'Purchases',
       icon: <ShoppingBag className="w-5 h-5" />,
       requiredModule: 'purchases'
+    },
+    {
+      id: 'purchase_return',
+      label: 'Purchase Return',
+      icon: <RotateCcw className="w-5 h-5 text-amber-300" />,
+      customCheck: checkPermission(perms, 'purchase_return', 'view') || checkPermission(perms, 'purchases', 'view')
+    },
+    {
+      id: 'journal',
+      label: 'Journal (Vouchers)',
+      icon: <BookOpen className="w-5 h-5 text-indigo-300" />,
+      customCheck: checkPermission(perms, 'journal', 'view')
     },
     {
       id: 'payments',

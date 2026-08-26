@@ -53,6 +53,9 @@ import { PdcManagement } from './components/PdcManagement';
 import { TrialBalanceView } from './components/TrialBalanceView';
 import { ProfitLossView } from './components/ProfitLossView';
 import { MisReports } from './components/MisReports';
+import { SalesReturnManagement } from './components/SalesReturn';
+import { PurchaseReturnManagement } from './components/PurchaseReturn';
+import { JournalManagement } from './components/JournalManagement';
 import { PdcTransaction } from './types';
 
 // Component to render shortcut modals
@@ -844,6 +847,10 @@ function AppMain() {
             />
           )}
 
+          {currentPage === 'sales_return' && (
+            <SalesReturnManagement currentCompanyId={activeCompId} />
+          )}
+
           {currentPage === 'purchases' && (
             <Purchases
               purchases={purchases}
@@ -858,6 +865,14 @@ function AppMain() {
               showToast={addToast}
               session={session}
             />
+          )}
+
+          {currentPage === 'purchase_return' && (
+            <PurchaseReturnManagement currentCompanyId={activeCompId} />
+          )}
+
+          {currentPage === 'journal' && (
+            <JournalManagement currentCompanyId={activeCompId} />
           )}
 
           {currentPage === 'payments' && (

@@ -12,7 +12,9 @@ import {
   AppSettings,
   AppUser,
   PdcTransaction,
-  JournalEntry
+  JournalEntry,
+  SaleReturn,
+  PurchaseReturn
 } from '../types';
 
 let cachedClient: SupabaseClient | null = null;
@@ -1181,6 +1183,86 @@ export const SupabaseSyncService = {
       console.warn('Supabase purchase delete exception:', e);
       return { success: false, error: e?.message };
     }
+  },
+
+  // --- RETURNS (SALES RETURN & PURCHASE RETURN) ---
+  async syncSaleReturn(saleReturn: SaleReturn): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: true };
+    try {
+      await ensureCompanyExists(client, saleReturn.companyId || 'comp-1');
+      const payload = {
+        id: saleReturn.id,
+        company_id: saleReturn.companyId || 'comp-1',
+        return_number: saleReturn.returnNumber,
+        invoice_id: saleReturn.invoiceId || null,
+        invoice_number: saleReturn.invoiceNumber || null,
+        date: saleReturn.date,
+        customer_id: saleReturn.customerId,
+        customer_name: saleReturn.customerName,
+        type: saleReturn.type,
+        reason: saleReturn.reason || '',
+        subtotal: Number(saleReturn.subtotal || 0),
+        discount: Number(saleReturn.discount || 0),
+        grand_total: Number(saleReturn.grandTotal || 0),
+        refunded_amount: Number(saleReturn.refundedAmount || 0),
+        notes: saleReturn.notes || '',
+        status: saleReturn.status || 'COMPLETED',
+        created_at: saleReturn.createdAt || new Date().toISOString()
+      };
+      await client.from('busy_ufo_sale_returns').upsert(payload);
+    } catch (err) {
+      console.warn('Supabase sale return sync warning:', err);
+    }
+    return { success: true };
+  },
+
+  async deleteSaleReturn(returnId: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: true };
+    try {
+      await client.from('busy_ufo_sale_returns').delete().eq('id', returnId);
+    } catch {}
+    return { success: true };
+  },
+
+  async syncPurchaseReturn(purchaseReturn: PurchaseReturn): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: true };
+    try {
+      await ensureCompanyExists(client, purchaseReturn.companyId || 'comp-1');
+      const payload = {
+        id: purchaseReturn.id,
+        company_id: purchaseReturn.companyId || 'comp-1',
+        return_number: purchaseReturn.returnNumber,
+        purchase_id: purchaseReturn.purchaseId || null,
+        purchase_number: purchaseReturn.purchaseNumber || null,
+        date: purchaseReturn.date,
+        supplier_id: purchaseReturn.supplierId,
+        supplier_name: purchaseReturn.supplierName,
+        type: purchaseReturn.type,
+        reason: purchaseReturn.reason || '',
+        subtotal: Number(purchaseReturn.subtotal || 0),
+        discount: Number(purchaseReturn.discount || 0),
+        grand_total: Number(purchaseReturn.grandTotal || 0),
+        notes: purchaseReturn.notes || '',
+        status: purchaseReturn.status || 'COMPLETED',
+        created_at: purchaseReturn.createdAt || new Date().toISOString()
+      };
+      await client.from('busy_ufo_purchase_returns').upsert(payload);
+    } catch (err) {
+      console.warn('Supabase purchase return sync warning:', err);
+    }
+    return { success: true };
+  },
+
+  async deletePurchaseReturn(returnId: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: true };
+    try {
+      await client.from('busy_ufo_purchase_returns').delete().eq('id', returnId);
+    } catch {}
+    return { success: true };
   },
 
   // --- RECEIPTS, PAYMENTS & EXPENSES ---

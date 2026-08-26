@@ -437,25 +437,54 @@ export const MisReports: React.FC<MisReportsProps> = ({
                     <tr>
                       <th className="p-2.5">Item Code</th>
                       <th className="p-2.5">Item Name</th>
-                      <th className="p-2.5 text-center">Stock</th>
+                      <th className="p-2.5 text-center">Opening</th>
+                      <th className="p-2.5 text-center text-emerald-700">In (+)</th>
+                      <th className="p-2.5 text-center text-rose-700">Out (-)</th>
+                      <th className="p-2.5 text-center bg-blue-50/50">Current Stock</th>
                       <th className="p-2.5 text-right">Cost Price</th>
-                      <th className="p-2.5 text-right">Selling Price</th>
                       <th className="p-2.5 text-right">Stock Valuation ({settings.currencySymbol})</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {products.map((p) => (
-                      <tr key={p.id} className="hover:bg-slate-50">
-                        <td className="p-2.5 font-mono font-bold text-blue-600">{p.code}</td>
-                        <td className="p-2.5 font-medium">{p.name}</td>
-                        <td className="p-2.5 text-center font-bold">{p.currentStock} {p.unit}</td>
-                        <td className="p-2.5 text-right font-mono">{p.costPrice.toFixed(2)}</td>
-                        <td className="p-2.5 text-right font-mono">{p.sellingPrice.toFixed(2)}</td>
-                        <td className="p-2.5 text-right font-mono font-bold text-slate-900">
-                          {(p.currentStock * p.costPrice).toFixed(2)}
-                        </td>
-                      </tr>
-                    ))}
+                    {products.map((p) => {
+                      const cleanCode = (p.code || '').trim().toLowerCase();
+                      const cleanName = (p.name || '').trim().toLowerCase();
+
+                      let purchased = 0;
+                      filteredPurchases.forEach((pu) => {
+                        (pu.items || []).forEach((item) => {
+                          if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                            purchased += Number(item.quantity || 0);
+                          }
+                        });
+                      });
+
+                      let sold = 0;
+                      filteredSales.forEach((sa) => {
+                        (sa.items || []).forEach((item) => {
+                          if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                            sold += Number(item.quantity || 0);
+                          }
+                        });
+                      });
+
+                      const opening = Number(p.openingStock || 0);
+
+                      return (
+                        <tr key={p.id} className="hover:bg-slate-50">
+                          <td className="p-2.5 font-mono font-bold text-blue-600">{p.code}</td>
+                          <td className="p-2.5 font-medium">{p.name}</td>
+                          <td className="p-2.5 text-center font-mono text-slate-600">{opening}</td>
+                          <td className="p-2.5 text-center font-mono font-bold text-emerald-700">{purchased > 0 ? `+${purchased}` : '0'}</td>
+                          <td className="p-2.5 text-center font-mono font-bold text-rose-700">{sold > 0 ? `-${sold}` : '0'}</td>
+                          <td className="p-2.5 text-center font-mono font-bold bg-blue-50/30 text-blue-900">{p.currentStock} {p.unit}</td>
+                          <td className="p-2.5 text-right font-mono">{p.costPrice.toFixed(2)}</td>
+                          <td className="p-2.5 text-right font-mono font-bold text-slate-900">
+                            {(p.currentStock * p.costPrice).toFixed(2)}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

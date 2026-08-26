@@ -30,13 +30,14 @@ export interface Company {
 }
 
 export interface UserCompanyAssignment {
-  id: string;
-  userId: string;
+  id?: string;
+  userId?: string;
   companyId: string;
-  roleId: string; // role for this specific company
-  permissionOverrides?: Partial<Record<PermissionKey, boolean>>; // company-specific rights overrides
-  isActive: boolean;
-  createdAt: string;
+  roleId?: string;
+  roleName?: string;
+  permissionOverrides?: Partial<Record<PermissionKey, boolean>>;
+  isActive?: boolean;
+  createdAt?: string;
 }
 
 export interface Customer {
@@ -160,6 +161,43 @@ export interface SaleInvoice {
   createdAt: string;
 }
 
+export interface SaleReturnItem {
+  productId: string;
+  productCode: string;
+  productName: string;
+  quantity: number;
+  unit?: string;
+  unitPrice: number;
+  discount?: number;
+  discountType?: 'PERCENT' | 'FIXED';
+  total: number;
+}
+
+export interface SaleReturn {
+  id: string;
+  requestId?: string;
+  companyId?: string;
+  returnNumber: string; // e.g., SR-2026-0001
+  invoiceId?: string;
+  invoiceNumber?: string;
+  date: string;
+  customerId: string;
+  customerName: string;
+  type: 'CASH' | 'CREDIT';
+  reason?: string;
+  items: SaleReturnItem[];
+  subtotal: number;
+  discount: number;
+  discountAmount?: number;
+  taxAmount?: number;
+  grandTotal: number;
+  refundedAmount?: number;
+  notes?: string;
+  status?: string;
+  updatedAt?: string;
+  createdAt: string;
+}
+
 export interface PurchaseItem {
   productId: string;
   productCode: string;
@@ -191,6 +229,43 @@ export interface PurchaseInvoice {
   paidAmount: number;
   dueAmount: number;
   notes?: string;
+  updatedAt?: string;
+  createdAt: string;
+}
+
+export interface PurchaseReturnItem {
+  productId: string;
+  productCode: string;
+  productName: string;
+  quantity: number;
+  unit?: string;
+  unitCost: number;
+  discount?: number;
+  discountType?: 'PERCENT' | 'FIXED';
+  total: number;
+}
+
+export interface PurchaseReturn {
+  id: string;
+  requestId?: string;
+  companyId?: string;
+  returnNumber: string; // e.g., PR-2026-0001
+  purchaseId?: string;
+  purchaseNumber?: string;
+  date: string;
+  supplierId: string;
+  supplierName: string;
+  type: 'CASH' | 'CREDIT';
+  reason?: string;
+  items: PurchaseReturnItem[];
+  subtotal: number;
+  discount: number;
+  discountAmount?: number;
+  taxAmount?: number;
+  grandTotal: number;
+  refundedAmount?: number;
+  notes?: string;
+  status?: string;
   updatedAt?: string;
   createdAt: string;
 }
@@ -296,8 +371,11 @@ export type PageType =
   | 'suppliers'
   | 'products'
   | 'sales'
+  | 'sales_return'
   | 'purchases'
+  | 'purchase_return'
   | 'payments'
+  | 'journal'
   | 'reports'
   | 'settings'
   | 'users'
@@ -316,10 +394,13 @@ export type PermissionModule =
   | 'suppliers'
   | 'products'
   | 'sales'
+  | 'sales_return'
   | 'purchases'
+  | 'purchase_return'
   | 'customer_receipts'
   | 'supplier_payments'
   | 'expenses'
+  | 'journal'
   | 'reports'
   | 'settings'
   | 'users'
@@ -470,6 +551,8 @@ export interface JournalEntryLine {
   particulars?: string;
 }
 
+export type JournalLine = JournalEntryLine;
+
 export interface OpeningJournalVoucher {
   id: string;
   companyId: string;
@@ -616,12 +699,13 @@ export interface JournalEntry {
   requestId?: string;
   companyId: string;
   voucherNo: string;
-  voucherType: 'SALES' | 'PURCHASE' | 'RECEIPT' | 'PAYMENT' | 'EXPENSE' | 'JOURNAL' | 'PDC';
+  voucherType: 'SALES' | 'PURCHASE' | 'RECEIPT' | 'PAYMENT' | 'EXPENSE' | 'JOURNAL' | 'PDC' | 'Journal Voucher' | string;
   voucherDate: string;
   narration?: string;
   debitTotal: number;
   creditTotal: number;
   lines: JournalEntryLine[];
+  status?: string;
   createdAt: string;
 }
 

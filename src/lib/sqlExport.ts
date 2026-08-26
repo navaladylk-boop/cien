@@ -537,6 +537,45 @@ CREATE TABLE IF NOT EXISTS busy_ufo_journal_lines (
     particulars TEXT
 );
 
+CREATE TABLE IF NOT EXISTS busy_ufo_sale_returns (
+    id VARCHAR(50) PRIMARY KEY,
+    company_id VARCHAR(50) REFERENCES companies(id) ON DELETE CASCADE,
+    return_number VARCHAR(50) NOT NULL,
+    invoice_id VARCHAR(50),
+    invoice_number VARCHAR(50),
+    date DATE NOT NULL,
+    customer_id VARCHAR(50),
+    customer_name VARCHAR(100) NOT NULL,
+    type VARCHAR(20) NOT NULL,
+    reason TEXT,
+    subtotal NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    discount NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    grand_total NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    refunded_amount NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    notes TEXT,
+    status VARCHAR(20) DEFAULT 'COMPLETED',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS busy_ufo_purchase_returns (
+    id VARCHAR(50) PRIMARY KEY,
+    company_id VARCHAR(50) REFERENCES companies(id) ON DELETE CASCADE,
+    return_number VARCHAR(50) NOT NULL,
+    purchase_id VARCHAR(50),
+    purchase_number VARCHAR(50),
+    date DATE NOT NULL,
+    supplier_id VARCHAR(50),
+    supplier_name VARCHAR(100) NOT NULL,
+    type VARCHAR(20) NOT NULL,
+    reason TEXT,
+    subtotal NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    discount NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    grand_total NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    notes TEXT,
+    status VARCHAR(20) DEFAULT 'COMPLETED',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 
 -- ------------------------------------------------------------
 -- 5. INITIAL SAMPLE SEED DATA

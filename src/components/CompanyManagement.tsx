@@ -131,6 +131,10 @@ export const CompanyManagement: React.FC<CompanyManagementProps> = ({
   };
 
   const filteredCompanies = (companies || []).filter((c) => {
+    // Fixed company context: Only display the active logged-in company
+    if (activeCompany && c.id !== activeCompany.id) {
+      return false;
+    }
     const q = searchQuery.toLowerCase();
     return (
       c.companyName.toLowerCase().includes(q) ||
@@ -284,18 +288,9 @@ export const CompanyManagement: React.FC<CompanyManagementProps> = ({
               </div>
 
               <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-2">
-                {!isActiveComp && comp.isActive ? (
-                  <button
-                    onClick={() => onSwitchCompany(comp.id)}
-                    className="text-xs font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
-                  >
-                    Switch to this Company
-                  </button>
-                ) : (
-                  <span className="text-xs text-slate-400 italic">
-                    {isActiveComp ? 'Currently Open' : 'Company Disabled'}
-                  </span>
-                )}
+                <span className="text-xs font-bold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-md border border-blue-100">
+                  Fixed Active Company Context
+                </span>
 
                 <div className="flex items-center gap-1">
                   {canEdit && (

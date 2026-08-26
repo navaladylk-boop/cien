@@ -3,7 +3,9 @@ import {
   Supplier,
   Product,
   SaleInvoice,
+  SaleReturn,
   PurchaseInvoice,
+  PurchaseReturn,
   CustomerReceipt,
   SupplierPayment,
   Expense,
@@ -74,7 +76,9 @@ let _inMemoryProducts: Product[] = [];
 let _inMemoryCustomers: Customer[] = [];
 let _inMemorySuppliers: Supplier[] = [];
 let _inMemorySales: SaleInvoice[] = [];
+let _inMemorySaleReturns: SaleReturn[] = [];
 let _inMemoryPurchases: PurchaseInvoice[] = [];
+let _inMemoryPurchaseReturns: PurchaseReturn[] = [];
 let _inMemoryReceipts: CustomerReceipt[] = [];
 let _inMemoryPayments: SupplierPayment[] = [];
 let _inMemoryExpenses: Expense[] = [];
@@ -141,6 +145,10 @@ export const StorageService = {
   // --- COMPANIES ---
   getCompanies(): Company[] {
     return _inMemoryCompanies;
+  },
+
+  setCompanies(companies: Company[]): void {
+    _inMemoryCompanies = companies;
   },
 
   getCompanyById(companyId: string): Company | null {
@@ -818,15 +826,35 @@ export const StorageService = {
     const prods = this.getProducts(companyId);
     const purchases = this.getPurchases(companyId);
     const sales = this.getSales(companyId);
+    const saleReturns = this.getSaleReturns(companyId);
+    const purchaseReturns = this.getPurchaseReturns(companyId);
 
     let updatedCount = 0;
     for (const prod of prods) {
+      const cleanCode = (prod.code || '').trim().toLowerCase();
+      const cleanName = (prod.name || '').trim().toLowerCase();
+
       let calcStock = Number(prod.openingStock || 0);
 
       // Add purchases
       purchases.forEach((pur) => {
-        pur.items.forEach((item) => {
-          if (item.productId === prod.id) {
+        (pur.items || []).forEach((item) => {
+          const matchId = Boolean(item.productId && item.productId === prod.id);
+          const matchCode = Boolean(cleanCode && item.productCode && item.productCode.trim().toLowerCase() === cleanCode);
+          const matchName = Boolean(cleanName && item.productName && item.productName.trim().toLowerCase() === cleanName);
+          if (matchId || matchCode || matchName) {
+            calcStock += Number(item.quantity || 0);
+          }
+        });
+      });
+
+      // Add sales returns (Stock IN)
+      saleReturns.forEach((sr) => {
+        (sr.items || []).forEach((item) => {
+          const matchId = Boolean(item.productId && item.productId === prod.id);
+          const matchCode = Boolean(cleanCode && item.productCode && item.productCode.trim().toLowerCase() === cleanCode);
+          const matchName = Boolean(cleanName && item.productName && item.productName.trim().toLowerCase() === cleanName);
+          if (matchId || matchCode || matchName) {
             calcStock += Number(item.quantity || 0);
           }
         });
@@ -834,8 +862,23 @@ export const StorageService = {
 
       // Deduct sales
       sales.forEach((sale) => {
-        sale.items.forEach((item) => {
-          if (item.productId === prod.id) {
+        (sale.items || []).forEach((item) => {
+          const matchId = Boolean(item.productId && item.productId === prod.id);
+          const matchCode = Boolean(cleanCode && item.productCode && item.productCode.trim().toLowerCase() === cleanCode);
+          const matchName = Boolean(cleanName && item.productName && item.productName.trim().toLowerCase() === cleanName);
+          if (matchId || matchCode || matchName) {
+            calcStock -= Number(item.quantity || 0);
+          }
+        });
+      });
+
+      // Deduct purchase returns (Stock OUT)
+      purchaseReturns.forEach((pr) => {
+        (pr.items || []).forEach((item) => {
+          const matchId = Boolean(item.productId && item.productId === prod.id);
+          const matchCode = Boolean(cleanCode && item.productCode && item.productCode.trim().toLowerCase() === cleanCode);
+          const matchName = Boolean(cleanName && item.productName && item.productName.trim().toLowerCase() === cleanName);
+          if (matchId || matchCode || matchName) {
             calcStock -= Number(item.quantity || 0);
           }
         });
@@ -1064,6 +1107,87 @@ export const StorageService = {
     return { success: true, message: 'Sale invoice voided in database.' };
   },
 
+  // --- SALES RETURNS ---
+  getSaleReturns(companyId?: string): SaleReturn[] {
+    if (!companyId) return _inMemorySaleReturns;
+    return _inMemorySaleReturns.filter((sr) => (sr.companyId || DEFAULT_COMPANY_ID) === companyId);
+  },
+
+  async createSaleReturnAsync(
+    returnData: Omit<SaleReturn, 'id' | 'returnNumber' | 'createdAt'> & { id?: string; returnNumber?: string },
+    companyId?: string
+  ): Promise<{ success: boolean; data?: SaleReturn; message?: string; error?: string }> {
+    const targetCompId = returnData.companyId || companyId || DEFAULT_COMPANY_ID;
+    const now = new Date().toISOString();
+    const count = _inMemorySaleReturns.filter((sr) => (sr.companyId || DEFAULT_COMPANY_ID) === targetCompId).length + 1;
+    const returnNumber = returnData.returnNumber || `SR-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`;
+    const reqId = returnData.requestId || generateUniqueRequestId('slr');
+
+    const saleReturn: SaleReturn = {
+      ...returnData,
+      id: returnData.id || `sr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      requestId: reqId,
+      companyId: targetCompId,
+      returnNumber,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Update Customer Outstanding Balance if Credit return
+    if (saleReturn.customerId && saleReturn.type === 'CREDIT') {
+      const cIdx = _inMemoryCustomers.findIndex((c) => c.id === saleReturn.customerId);
+      if (cIdx !== -1) {
+        _inMemoryCustomers[cIdx].outstandingBalance = Number((_inMemoryCustomers[cIdx].outstandingBalance - saleReturn.grandTotal).toFixed(2));
+      }
+    }
+
+    // Increase product currentStock (Stock IN)
+    (saleReturn.items || []).forEach((item) => {
+      const pIdx = _inMemoryProducts.findIndex(
+        (p) => p.id === item.productId || (item.productCode && p.code === item.productCode)
+      );
+      if (pIdx !== -1) {
+        _inMemoryProducts[pIdx].currentStock += Number(item.quantity || 0);
+        _inMemoryProducts[pIdx].updatedAt = now;
+      }
+    });
+
+    _inMemorySaleReturns.unshift(saleReturn);
+
+    if (checkOnline()) {
+      SupabaseSyncService.syncSaleReturn(saleReturn).catch(() => {});
+    }
+
+    return {
+      success: true,
+      data: saleReturn,
+      message: `Sales return ${saleReturn.returnNumber} recorded successfully.`
+    };
+  },
+
+  async deleteSaleReturnAsync(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    const idx = _inMemorySaleReturns.findIndex((sr) => sr.id === id);
+    if (idx !== -1) {
+      const target = _inMemorySaleReturns[idx];
+      // Revert stock IN -> stock OUT
+      (target.items || []).forEach((item) => {
+        const pIdx = _inMemoryProducts.findIndex((p) => p.id === item.productId);
+        if (pIdx !== -1) {
+          _inMemoryProducts[pIdx].currentStock = Math.max(0, _inMemoryProducts[pIdx].currentStock - Number(item.quantity || 0));
+        }
+      });
+      // Revert customer balance
+      if (target.customerId && target.type === 'CREDIT') {
+        const cIdx = _inMemoryCustomers.findIndex((c) => c.id === target.customerId);
+        if (cIdx !== -1) {
+          _inMemoryCustomers[cIdx].outstandingBalance = Number((_inMemoryCustomers[cIdx].outstandingBalance + target.grandTotal).toFixed(2));
+        }
+      }
+      _inMemorySaleReturns.splice(idx, 1);
+    }
+    return { success: true, message: 'Sales return record deleted.' };
+  },
+
   // --- PURCHASES INVOICES ---
   getPurchases(companyId?: string): PurchaseInvoice[] {
     if (!companyId) return _inMemoryPurchases;
@@ -1269,6 +1393,87 @@ export const StorageService = {
     }
 
     return { success: true, message: 'Purchase bill voided and stock reversed in database.' };
+  },
+
+  // --- PURCHASE RETURNS ---
+  getPurchaseReturns(companyId?: string): PurchaseReturn[] {
+    if (!companyId) return _inMemoryPurchaseReturns;
+    return _inMemoryPurchaseReturns.filter((pr) => (pr.companyId || DEFAULT_COMPANY_ID) === companyId);
+  },
+
+  async createPurchaseReturnAsync(
+    returnData: Omit<PurchaseReturn, 'id' | 'returnNumber' | 'createdAt'> & { id?: string; returnNumber?: string },
+    companyId?: string
+  ): Promise<{ success: boolean; data?: PurchaseReturn; message?: string; error?: string }> {
+    const targetCompId = returnData.companyId || companyId || DEFAULT_COMPANY_ID;
+    const now = new Date().toISOString();
+    const count = _inMemoryPurchaseReturns.filter((pr) => (pr.companyId || DEFAULT_COMPANY_ID) === targetCompId).length + 1;
+    const returnNumber = returnData.returnNumber || `PR-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`;
+    const reqId = returnData.requestId || generateUniqueRequestId('purr');
+
+    const purchaseReturn: PurchaseReturn = {
+      ...returnData,
+      id: returnData.id || `pr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      requestId: reqId,
+      companyId: targetCompId,
+      returnNumber,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Update Supplier Payable Balance if Credit return
+    if (purchaseReturn.supplierId && purchaseReturn.type === 'CREDIT') {
+      const sIdx = _inMemorySuppliers.findIndex((s) => s.id === purchaseReturn.supplierId);
+      if (sIdx !== -1) {
+        _inMemorySuppliers[sIdx].payableBalance = Number((_inMemorySuppliers[sIdx].payableBalance - purchaseReturn.grandTotal).toFixed(2));
+      }
+    }
+
+    // Decrease product currentStock (Stock OUT)
+    (purchaseReturn.items || []).forEach((item) => {
+      const pIdx = _inMemoryProducts.findIndex(
+        (p) => p.id === item.productId || (item.productCode && p.code === item.productCode)
+      );
+      if (pIdx !== -1) {
+        _inMemoryProducts[pIdx].currentStock = Math.max(0, _inMemoryProducts[pIdx].currentStock - Number(item.quantity || 0));
+        _inMemoryProducts[pIdx].updatedAt = now;
+      }
+    });
+
+    _inMemoryPurchaseReturns.unshift(purchaseReturn);
+
+    if (checkOnline()) {
+      SupabaseSyncService.syncPurchaseReturn(purchaseReturn).catch(() => {});
+    }
+
+    return {
+      success: true,
+      data: purchaseReturn,
+      message: `Purchase return ${purchaseReturn.returnNumber} recorded successfully.`
+    };
+  },
+
+  async deletePurchaseReturnAsync(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    const idx = _inMemoryPurchaseReturns.findIndex((pr) => pr.id === id);
+    if (idx !== -1) {
+      const target = _inMemoryPurchaseReturns[idx];
+      // Revert stock OUT -> stock IN
+      (target.items || []).forEach((item) => {
+        const pIdx = _inMemoryProducts.findIndex((p) => p.id === item.productId);
+        if (pIdx !== -1) {
+          _inMemoryProducts[pIdx].currentStock += Number(item.quantity || 0);
+        }
+      });
+      // Revert supplier balance
+      if (target.supplierId && target.type === 'CREDIT') {
+        const sIdx = _inMemorySuppliers.findIndex((s) => s.id === target.supplierId);
+        if (sIdx !== -1) {
+          _inMemorySuppliers[sIdx].payableBalance = Number((_inMemorySuppliers[sIdx].payableBalance + target.grandTotal).toFixed(2));
+        }
+      }
+      _inMemoryPurchaseReturns.splice(idx, 1);
+    }
+    return { success: true, message: 'Purchase return record deleted.' };
   },
 
   // --- CUSTOMER RECEIPTS ---
@@ -2204,7 +2409,9 @@ export const StorageService = {
     const customers = this.getCustomers(activeComp);
     const suppliers = this.getSuppliers(activeComp);
     const sales = this.getSales(activeComp);
+    const saleReturns = this.getSaleReturns(activeComp);
     const purchases = this.getPurchases(activeComp);
+    const purchaseReturns = this.getPurchaseReturns(activeComp);
     const receipts = this.getReceipts(activeComp);
     const payments = this.getPayments(activeComp);
     const expenses = this.getExpenses(activeComp);
@@ -2320,6 +2527,34 @@ export const StorageService = {
       }
     });
 
+    // Sales Returns
+    saleReturns.forEach((sr) => {
+      const isThisParty = (customer && sr.customerId === customer.id) || sr.customerName.toLowerCase() === ledgerName.toLowerCase();
+      const isSalesAccount = ledgerName.toLowerCase().includes('sales');
+
+      if (isThisParty) {
+        allTx.push({
+          id: sr.id,
+          date: sr.date,
+          voucherNo: sr.returnNumber,
+          voucherType: 'Sales Return',
+          particulars: `Sales Return (${sr.type})`,
+          debit: 0,
+          credit: Number(sr.grandTotal || 0)
+        });
+      } else if (isSalesAccount) {
+        allTx.push({
+          id: sr.id,
+          date: sr.date,
+          voucherNo: sr.returnNumber,
+          voucherType: 'Sales Return',
+          particulars: `Sales Return: ${sr.customerName}`,
+          debit: Number(sr.grandTotal || 0),
+          credit: 0
+        });
+      }
+    });
+
     // Supplier / Purchase transactions
     purchases.forEach((p) => {
       const isThisParty = (supplier && p.supplierId === supplier.id) || p.supplierName.toLowerCase() === ledgerName.toLowerCase();
@@ -2355,6 +2590,34 @@ export const StorageService = {
           particulars: `Purchase from ${p.supplierName}`,
           debit: Number(p.subtotal || p.grandTotal || 0),
           credit: 0
+        });
+      }
+    });
+
+    // Purchase Returns
+    purchaseReturns.forEach((pr) => {
+      const isThisParty = (supplier && pr.supplierId === supplier.id) || pr.supplierName.toLowerCase() === ledgerName.toLowerCase();
+      const isPurchaseAccount = ledgerName.toLowerCase().includes('purchase');
+
+      if (isThisParty) {
+        allTx.push({
+          id: pr.id,
+          date: pr.date,
+          voucherNo: pr.returnNumber,
+          voucherType: 'Purchase Return',
+          particulars: `Purchase Return (${pr.type})`,
+          debit: Number(pr.grandTotal || 0),
+          credit: 0
+        });
+      } else if (isPurchaseAccount) {
+        allTx.push({
+          id: pr.id,
+          date: pr.date,
+          voucherNo: pr.returnNumber,
+          voucherType: 'Purchase Return',
+          particulars: `Purchase Return: ${pr.supplierName}`,
+          debit: 0,
+          credit: Number(pr.grandTotal || 0)
         });
       }
     });
@@ -2498,6 +2761,8 @@ export const StorageService = {
     const products = this.getProducts(activeComp);
     const purchases = this.getPurchases(activeComp);
     const sales = this.getSales(activeComp);
+    const saleReturns = this.getSaleReturns(activeComp);
+    const purchaseReturns = this.getPurchaseReturns(activeComp);
 
     const product = products.find((p) => p.id === productId || p.code === productId);
     if (!product) return [];
@@ -2564,6 +2829,44 @@ export const StorageService = {
             rate: Number(item.unitPrice || 0),
             amount: Number(item.total || 0),
             notes: `Sales Invoice ${sale.invoiceNumber}`
+          });
+        }
+      });
+    });
+
+    // Sales Returns (Stock IN)
+    saleReturns.forEach((sr) => {
+      (sr.items || []).forEach((item) => {
+        if (item.productId === product.id || item.productCode === product.code) {
+          movements.push({
+            date: sr.date,
+            voucherType: 'Sales Return',
+            voucherNo: sr.returnNumber,
+            partyName: sr.customerName,
+            quantityIn: Number(item.quantity || 0),
+            quantityOut: 0,
+            rate: Number(item.unitPrice || 0),
+            amount: Number(item.total || 0),
+            notes: `Sales Return ${sr.returnNumber}`
+          });
+        }
+      });
+    });
+
+    // Purchase Returns (Stock OUT)
+    purchaseReturns.forEach((pr) => {
+      (pr.items || []).forEach((item) => {
+        if (item.productId === product.id || item.productCode === product.code) {
+          movements.push({
+            date: pr.date,
+            voucherType: 'Purchase Return',
+            voucherNo: pr.returnNumber,
+            partyName: pr.supplierName,
+            quantityIn: 0,
+            quantityOut: Number(item.quantity || 0),
+            rate: Number(item.unitCost || 0),
+            amount: Number(item.total || 0),
+            notes: `Purchase Return ${pr.returnNumber}`
           });
         }
       });
@@ -3069,6 +3372,9 @@ export const StorageService = {
         _inMemoryJournalEntries = remoteJournals;
         pulledCounts.journals = remoteJournals.length;
       }
+
+      // Automatically align in-memory product current stock with Opening + In - Out
+      this.recalculateProductStock(companyId);
 
       return { success: true, pulledCounts };
     } catch (err: any) {

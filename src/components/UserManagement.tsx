@@ -21,10 +21,12 @@ import {
   RotateCcw,
   Plus,
   CloudUpload,
-  RefreshCw
+  RefreshCw,
+  Building2
 } from 'lucide-react';
-import { AppUser, Role, PermissionKey, PermissionModule, AuditLog } from '../types';
+import { AppUser, Role, PermissionKey, PermissionModule, AuditLog, Company } from '../types';
 import { AuthService } from '../lib/auth';
+import { StorageService } from '../lib/storage';
 import { SupabaseSyncService } from '../lib/supabase';
 import { MODULE_PERMISSIONS, ALL_PERMISSION_KEYS } from '../lib/permissions';
 
@@ -43,9 +45,11 @@ export const UserManagement: React.FC<UserManagementProps> = ({
   const [users, setUsers] = useState<AppUser[]>(() => AuthService.getUsers());
   const [roles, setRoles] = useState<Role[]>(() => AuthService.getRoles());
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => AuthService.getAuditLogs());
+  const [companies, setCompanies] = useState<Company[]>(() => StorageService.getCompanies().filter((c) => c.isActive));
 
   // User Search & Filters
   const [userSearch, setUserSearch] = useState<string>('');
+  const [selectedCompanyFilter, setSelectedCompanyFilter] = useState<string>('ALL');
 
   // Selected User for Rights Management
   const [selectedUserForRights, setSelectedUserForRights] = useState<AppUser | null>(() => {
@@ -67,6 +71,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
   const [newConfirmPassword, setNewConfirmPassword] = useState<string>('');
   const [newRoleId, setNewRoleId] = useState<string>('role-sales');
   const [newIsActive, setNewIsActive] = useState<boolean>(true);
+  const [newAssignedCompanyIds, setNewAssignedCompanyIds] = useState<string[]>([]);
   const [showPassword, setShowPassword] = useState<boolean>(false);
 
   // Reset Password Form State
@@ -88,6 +93,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
     setUsers(updatedUsers);
     setRoles(AuthService.getRoles());
     setAuditLogs(AuthService.getAuditLogs());
+    setCompanies(StorageService.getCompanies().filter((c) => c.isActive));
 
     if (selectedUserForRights) {
       const refreshedSelected = updatedUsers.find((u) => u.id === selectedUserForRights.id);
@@ -132,6 +138,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
     setNewConfirmPassword('');
     setNewRoleId(roles[1]?.id || 'role-sales');
     setNewIsActive(true);
+    setNewAssignedCompanyIds([]); // Empty = All companies or specific
     setShowPassword(false);
     setIsNewUserModalOpen(true);
   };
@@ -150,7 +157,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({
         fullName: newFullName,
         password: newPassword,
         roleId: newRoleId,
-        isActive: newIsActive
+        isActive: newIsActive,
+        assignedCompanyIds: newAssignedCompanyIds
       });
 
       const syncResult = await SupabaseSyncService.syncUser(created);
@@ -176,7 +184,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({
       const updated = await AuthService.updateUser(editingUser.id, {
         fullName: editingUser.fullName,
         roleId: editingUser.roleId,
-        isActive: editingUser.isActive
+        isActive: editingUser.isActive,
+        assignedCompanyIds: editingUser.assignedCompanyIds
       });
 
       const syncResult = await SupabaseSyncService.syncUser(updated);
@@ -382,6 +391,14 @@ export const UserManagement: React.FC<UserManagementProps> = ({
 
   // Filtered Users
   const filteredUsers = users.filter((u) => {
+    if (selectedCompanyFilter !== 'ALL') {
+      const isAdmin = u.roleId === 'role-admin' || u.username.toLowerCase() === 'admin' || u.roleName === 'Administrator';
+      if (!isAdmin && u.assignedCompanyIds && u.assignedCompanyIds.length > 0) {
+        if (!u.assignedCompanyIds.includes(selectedCompanyFilter)) {
+          return false;
+        }
+      }
+    }
     const q = userSearch.trim().toLowerCase();
     if (!q) return true;
     return (
@@ -480,15 +497,34 @@ export const UserManagement: React.FC<UserManagementProps> = ({
         <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
           {/* Action Bar */}
           <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div className="relative w-full sm:w-80">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Search username, full name, role..."
-                value={userSearch}
-                onChange={(e) => setUserSearch(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 rounded-xl border border-slate-200 text-xs focus:ring-2 focus:ring-blue-100 outline-hidden"
-              />
+            <div className="flex flex-col sm:flex-row items-center gap-2 w-full sm:w-auto">
+              <div className="relative w-full sm:w-72">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search username, full name, role..."
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 rounded-xl border border-slate-200 text-xs focus:ring-2 focus:ring-blue-100 outline-hidden"
+                />
+              </div>
+
+              <div className="flex items-center gap-1.5 w-full sm:w-auto bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
+                <Building2 className="w-4 h-4 text-slate-500 shrink-0" />
+                <span className="text-xs font-bold text-slate-500 whitespace-nowrap">Company:</span>
+                <select
+                  value={selectedCompanyFilter}
+                  onChange={(e) => setSelectedCompanyFilter(e.target.value)}
+                  className="bg-transparent text-xs font-bold text-slate-800 outline-hidden cursor-pointer"
+                >
+                  <option value="ALL">All Companies ({companies.length})</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.companyName} ({c.shortName})
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -521,6 +557,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                   <th className="p-3.5 sm:p-4">User Name</th>
                   <th className="p-3.5 sm:p-4">Full Name</th>
                   <th className="p-3.5 sm:p-4">Assigned Role</th>
+                  <th className="p-3.5 sm:p-4">Company Access</th>
                   <th className="p-3.5 sm:p-4 text-center">Status</th>
                   <th className="p-3.5 sm:p-4">Last Login</th>
                   <th className="p-3.5 sm:p-4 text-right">Actions</th>
@@ -532,6 +569,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                   const isOverrideActive = Boolean(
                     user.permissionOverrides && Object.keys(user.permissionOverrides).length > 0
                   );
+                  const isAdmin = user.roleId === 'role-admin' || user.username.toLowerCase() === 'admin' || user.roleName === 'Administrator';
+                  const assignedIds = user.assignedCompanyIds || [];
 
                   return (
                     <tr key={user.id} className="hover:bg-slate-50/80 transition-colors">
@@ -573,6 +612,30 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                             </span>
                           )}
                         </div>
+                      </td>
+
+                      <td className="p-3.5 sm:p-4">
+                        {isAdmin || assignedIds.length === 0 ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            <Building2 className="w-3 h-3 text-emerald-600" />
+                            <span>All Companies (Global)</span>
+                          </span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 max-w-xs">
+                            {assignedIds.map((cid) => {
+                              const comp = companies.find((c) => c.id === cid);
+                              return (
+                                <span
+                                  key={cid}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200"
+                                >
+                                  <Building2 className="w-2.5 h-2.5 text-slate-500" />
+                                  <span>{comp ? comp.shortName || comp.companyName : cid}</span>
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
                       </td>
 
                       <td className="p-3.5 sm:p-4 text-center">
@@ -1077,6 +1140,61 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                 </select>
               </div>
 
+              {/* Company Access Selection */}
+              <div className="space-y-1.5 border-t border-slate-100 pt-3">
+                <label className="block font-bold text-slate-700 uppercase flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                    Company Access (Scope)
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-normal normal-case">
+                    Select allowed companies
+                  </span>
+                </label>
+
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2 max-h-40 overflow-y-auto">
+                  <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newAssignedCompanyIds.length === 0}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setNewAssignedCompanyIds([]);
+                        }
+                      }}
+                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span>All Companies (Global Access)</span>
+                  </label>
+
+                  <div className="pl-4 pt-1 border-t border-slate-200/60 space-y-1.5">
+                    {companies.map((c) => {
+                      const isChecked = newAssignedCompanyIds.includes(c.id);
+                      return (
+                        <label key={c.id} className="flex items-center gap-2 text-slate-700 cursor-pointer hover:text-slate-900">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setNewAssignedCompanyIds([...newAssignedCompanyIds.filter((id) => id !== 'ALL'), c.id]);
+                              } else {
+                                const remaining = newAssignedCompanyIds.filter((id) => id !== c.id);
+                                setNewAssignedCompanyIds(remaining);
+                              }
+                            }}
+                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="font-medium text-xs">
+                            {c.companyName} ({c.shortName})
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between">
                 <div>
                   <span className="font-bold text-slate-900 block text-xs">Account Status</span>
@@ -1169,6 +1287,63 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                     </option>
                   ))}
                 </select>
+              </div>
+
+              {/* Company Access Selection */}
+              <div className="space-y-1.5 border-t border-slate-100 pt-3">
+                <label className="block font-bold text-slate-700 uppercase flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                    Company Access (Scope)
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-normal normal-case">
+                    Select allowed companies
+                  </span>
+                </label>
+
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2 max-h-40 overflow-y-auto">
+                  <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!editingUser.assignedCompanyIds || editingUser.assignedCompanyIds.length === 0}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setEditingUser({ ...editingUser, assignedCompanyIds: [] });
+                        }
+                      }}
+                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span>All Companies (Global Access)</span>
+                  </label>
+
+                  <div className="pl-4 pt-1 border-t border-slate-200/60 space-y-1.5">
+                    {companies.map((c) => {
+                      const currentAssigned = editingUser.assignedCompanyIds || [];
+                      const isChecked = currentAssigned.includes(c.id);
+                      return (
+                        <label key={c.id} className="flex items-center gap-2 text-slate-700 cursor-pointer hover:text-slate-900">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              let next: string[];
+                              if (e.target.checked) {
+                                next = [...currentAssigned, c.id];
+                              } else {
+                                next = currentAssigned.filter((id) => id !== c.id);
+                              }
+                              setEditingUser({ ...editingUser, assignedCompanyIds: next });
+                            }}
+                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="font-medium text-xs">
+                            {c.companyName} ({c.shortName})
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
 
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between">

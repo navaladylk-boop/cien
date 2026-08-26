@@ -79,8 +79,11 @@ export const Header: React.FC<HeaderProps> = ({
     suppliers: 'Supplier Records',
     products: 'Inventory Catalog',
     sales: 'Sales Invoices',
+    sales_return: 'Sales Returns (Credit Notes)',
     purchases: 'Purchase Bills',
+    purchase_return: 'Purchase Returns (Debit Notes)',
     payments: 'Receipts & Expenses',
+    journal: 'Journal Vouchers',
     reports: 'Financial Reports',
     settings: 'System Settings',
     users: 'Users & Rights Security',
@@ -201,78 +204,20 @@ export const Header: React.FC<HeaderProps> = ({
 
           <div className="h-6 w-px bg-slate-200 hidden md:block" />
 
-          {/* Active Company Switcher */}
+          {/* Active Company Fixed Badge */}
           {session?.company && (
-            <div className="relative">
-              <button
-                onClick={() => setIsCompanyMenuOpen(!isCompanyMenuOpen)}
-                className="flex items-center gap-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-900 px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-2xs"
-                title="Click to switch active company context"
-              >
-                <div className="p-1 bg-blue-600 text-white rounded-lg shrink-0">
-                  <Building2 className="w-3.5 h-3.5" />
-                </div>
-                <div className="text-left hidden sm:block">
-                  <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider block leading-none">
-                    Active Company
-                  </span>
-                  <span className="text-xs font-bold text-slate-900 block leading-tight max-w-[150px] truncate">
-                    {session.company.companyName}
-                  </span>
-                </div>
-                <ChevronDown className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-              </button>
-
-              {isCompanyMenuOpen && (
-                <>
-                  <div
-                    onClick={() => setIsCompanyMenuOpen(false)}
-                    className="fixed inset-0 z-40"
-                  />
-                  <div className="absolute left-0 mt-2 w-72 bg-white rounded-2xl shadow-xl border border-slate-200 py-2 z-50 animate-in fade-in zoom-in-95">
-                    <div className="px-4 py-2 border-b border-slate-100 flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-800">Assigned Companies</span>
-                      <button
-                        onClick={() => {
-                          setIsCompanyMenuOpen(false);
-                          onNavigate('companies');
-                        }}
-                        className="text-[11px] text-blue-600 hover:underline font-semibold"
-                      >
-                        Manage All
-                      </button>
-                    </div>
-
-                    <div className="max-h-60 overflow-y-auto py-1">
-                      {session.assignedCompanies?.map((comp) => {
-                        const isCurrent = comp.id === session.company.id;
-                        return (
-                          <button
-                            key={comp.id}
-                            onClick={() => {
-                              setIsCompanyMenuOpen(false);
-                              if (!isCurrent && onSwitchCompany) {
-                                onSwitchCompany(comp.id);
-                              }
-                            }}
-                            className={`w-full px-4 py-2.5 text-left flex items-center justify-between text-xs hover:bg-slate-50 transition-colors ${
-                              isCurrent ? 'bg-blue-50/60 font-bold text-blue-700' : 'text-slate-700'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-600 uppercase font-bold">
-                                {comp.shortName}
-                              </span>
-                              <span className="truncate max-w-[160px]">{comp.companyName}</span>
-                            </div>
-                            {isCurrent && <Check className="w-4 h-4 text-blue-600 shrink-0" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </>
-              )}
+            <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-900 px-3 py-1.5 rounded-xl shadow-2xs">
+              <div className="p-1 bg-blue-600 text-white rounded-lg shrink-0">
+                <Building2 className="w-3.5 h-3.5" />
+              </div>
+              <div className="text-left hidden sm:block">
+                <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider block leading-none">
+                  Logged In Company
+                </span>
+                <span className="text-xs font-bold text-slate-900 block leading-tight max-w-[170px] truncate">
+                  {session.company.companyName}
+                </span>
+              </div>
             </div>
           )}
 

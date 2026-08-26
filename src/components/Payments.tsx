@@ -105,6 +105,7 @@ export const Payments: React.FC<PaymentsProps> = ({
 
   // --- Customer Receipt Modal State ---
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
+  const [receiptDate, setReceiptDate] = useState(new Date().toISOString().split('T')[0]);
   const [receiptCustomerId, setReceiptCustomerId] = useState('');
   const [receiptAmount, setReceiptAmount] = useState('');
   const [receiptMode, setReceiptMode] = useState<'CASH' | 'BANK_TRANSFER' | 'CHEQUE'>('CASH');
@@ -119,6 +120,7 @@ export const Payments: React.FC<PaymentsProps> = ({
 
   // --- Supplier Payment Modal State ---
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [paymentSupplierId, setPaymentSupplierId] = useState('');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentMode, setPaymentMode] = useState<'CASH' | 'BANK_TRANSFER' | 'CHEQUE'>('CASH');
@@ -133,6 +135,7 @@ export const Payments: React.FC<PaymentsProps> = ({
 
   // --- Expense Modal State ---
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
+  const [expenseDate, setExpenseDate] = useState(new Date().toISOString().split('T')[0]);
   const [expenseCategory, setExpenseCategory] = useState('Electricity / Utilities');
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expensePaidTo, setExpensePaidTo] = useState('');
@@ -340,7 +343,7 @@ export const Payments: React.FC<PaymentsProps> = ({
     setIsSubmittingReceipt(true);
     try {
       const rec = await onCreateReceipt({
-        date: new Date().toISOString().split('T')[0],
+        date: receiptDate || new Date().toISOString().split('T')[0],
         customerId: receiptCustomerId,
         customerName: cust ? cust.name : 'Customer',
         amount: amt,
@@ -432,7 +435,7 @@ export const Payments: React.FC<PaymentsProps> = ({
     setIsSubmittingPayment(true);
     try {
       const pay = await onCreatePayment({
-        date: new Date().toISOString().split('T')[0],
+        date: paymentDate || new Date().toISOString().split('T')[0],
         supplierId: paymentSupplierId,
         supplierName: supp ? supp.name : 'Supplier',
         amount: amt,
@@ -484,7 +487,7 @@ export const Payments: React.FC<PaymentsProps> = ({
     setIsSubmittingExpense(true);
     try {
       const exp = await onCreateExpense({
-        date: new Date().toISOString().split('T')[0],
+        date: expenseDate || new Date().toISOString().split('T')[0],
         category: expenseCategory,
         amount: amt,
         paidTo: expensePaidTo,
@@ -520,6 +523,7 @@ export const Payments: React.FC<PaymentsProps> = ({
           <button
             id="btn-new-receipt"
             onClick={() => {
+              setReceiptDate(new Date().toISOString().split('T')[0]);
               setReceiptCustomerId(customers[0]?.id || '');
               setReceiptAmount('');
               setReceiptRef('');
@@ -541,6 +545,7 @@ export const Payments: React.FC<PaymentsProps> = ({
           <button
             id="btn-new-payment"
             onClick={() => {
+              setPaymentDate(new Date().toISOString().split('T')[0]);
               setPaymentSupplierId(suppliers[0]?.id || '');
               setPaymentAmount('');
               setPaymentRef('');
@@ -562,6 +567,7 @@ export const Payments: React.FC<PaymentsProps> = ({
           <button
             id="btn-new-expense"
             onClick={() => {
+              setExpenseDate(new Date().toISOString().split('T')[0]);
               setExpenseAmount('');
               setIsExpenseModalOpen(true);
             }}
@@ -845,8 +851,21 @@ export const Payments: React.FC<PaymentsProps> = ({
             </div>
 
             <form onSubmit={handleCreateReceipt} className="space-y-4 overflow-y-auto pt-4 pr-1">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                    Receipt Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={receiptDate}
+                    onChange={(e) => setReceiptDate(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 text-sm font-mono font-bold text-slate-800 bg-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
+                  />
+                </div>
+
+                <div className="sm:col-span-1">
                   <SearchableCustomerSelect
                     customers={customers}
                     selectedCustomerId={receiptCustomerId}
@@ -1226,8 +1245,21 @@ export const Payments: React.FC<PaymentsProps> = ({
             </div>
 
             <form onSubmit={handleCreatePayment} className="space-y-4 overflow-y-auto pt-4 pr-1">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                    Payment Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={paymentDate}
+                    onChange={(e) => setPaymentDate(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 text-sm font-mono font-bold text-slate-800 bg-white focus:ring-2 focus:ring-purple-500 outline-hidden"
+                  />
+                </div>
+
+                <div className="sm:col-span-1">
                   <SearchableSupplierSelect
                     suppliers={suppliers}
                     selectedSupplierId={paymentSupplierId}
@@ -1593,24 +1625,39 @@ export const Payments: React.FC<PaymentsProps> = ({
             </h3>
 
             <form onSubmit={handleCreateExpense} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                  Category *
-                </label>
-                <select
-                  value={expenseCategory}
-                  onChange={(e) => setExpenseCategory(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-slate-200 text-sm bg-white font-medium"
-                >
-                  <option value="Electricity / Utilities">Electricity / Utilities</option>
-                  <option value="Rent & Premises">Rent & Premises</option>
-                  <option value="Salaries & Wages">Salaries & Wages</option>
-                  <option value="Transport & Delivery">Transport & Delivery</option>
-                  <option value="Office Supplies & Stationery">Office Supplies & Stationery</option>
-                  <option value="Tea & Refreshments">Tea & Refreshments</option>
-                  <option value="Maintenance & Repairs">Maintenance & Repairs</option>
-                  <option value="Other Misc Expenses">Other Misc Expenses</option>
-                </select>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                    Expense Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={expenseDate}
+                    onChange={(e) => setExpenseDate(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 text-sm font-mono font-bold text-slate-800 bg-white focus:ring-2 focus:ring-rose-500 outline-hidden"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                    Category *
+                  </label>
+                  <select
+                    value={expenseCategory}
+                    onChange={(e) => setExpenseCategory(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 text-sm bg-white font-medium"
+                  >
+                    <option value="Electricity / Utilities">Electricity / Utilities</option>
+                    <option value="Rent & Premises">Rent & Premises</option>
+                    <option value="Salaries & Wages">Salaries & Wages</option>
+                    <option value="Transport & Delivery">Transport & Delivery</option>
+                    <option value="Office Supplies & Stationery">Office Supplies & Stationery</option>
+                    <option value="Tea & Refreshments">Tea & Refreshments</option>
+                    <option value="Maintenance & Repairs">Maintenance & Repairs</option>
+                    <option value="Other Misc Expenses">Other Misc Expenses</option>
+                  </select>
+                </div>
               </div>
 
               <div>

@@ -832,8 +832,29 @@ export const Reports: React.FC<ReportsProps> = ({
                 onClick={() =>
                   handleExportCSV(
                     'StockReport',
-                    ['Code', 'Product', 'Category', 'StockQty', 'CostPrice', 'SellingPrice', 'StockValueCost'],
-                    products.map((p) => [p.code, p.name, p.category, p.currentStock, p.costPrice, p.sellingPrice, p.currentStock * p.costPrice])
+                    ['Code', 'Product', 'Category', 'OpeningStock', 'PurchasedQty', 'SoldQty', 'CurrentStock', 'CostPrice', 'SellingPrice', 'StockValueCost'],
+                    products.map((p) => {
+                      const cleanCode = (p.code || '').trim().toLowerCase();
+                      const cleanName = (p.name || '').trim().toLowerCase();
+                      let purchased = 0;
+                      filteredPurchases.forEach((pu) => {
+                        (pu.items || []).forEach((item) => {
+                          if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                            purchased += Number(item.quantity || 0);
+                          }
+                        });
+                      });
+                      let sold = 0;
+                      filteredSales.forEach((sa) => {
+                        (sa.items || []).forEach((item) => {
+                          if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                            sold += Number(item.quantity || 0);
+                          }
+                        });
+                      });
+                      const opening = Number(p.openingStock || 0);
+                      return [p.code, p.name, p.category, opening, purchased, sold, p.currentStock, p.costPrice, p.sellingPrice, p.currentStock * p.costPrice];
+                    })
                   )
                 }
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-bold cursor-pointer"
@@ -843,32 +864,69 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse min-w-[650px]">
+              <table className="w-full text-left text-xs border-collapse min-w-[750px]">
                 <thead>
                   <tr className="bg-slate-50 text-slate-600 font-bold uppercase border-b border-slate-200">
                     <th className="p-3">Code</th>
                     <th className="p-3">Product Name</th>
                     <th className="p-3">Category</th>
-                    <th className="p-3 text-center">Stock Qty</th>
+                    <th className="p-3 text-center">Opening</th>
+                    <th className="p-3 text-center text-emerald-700">In (+)</th>
+                    <th className="p-3 text-center text-rose-700">Out (-)</th>
+                    <th className="p-3 text-center bg-blue-50/50 text-blue-900">Current Stock</th>
                     <th className="p-3 text-right">Cost Value</th>
                     <th className="p-3 text-right">Retail Value</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-medium">
-                  {products.map((p) => (
-                    <tr key={p.id}>
-                      <td className="p-3 font-mono font-bold">{p.code}</td>
-                      <td className="p-3 font-bold">{p.name}</td>
-                      <td className="p-3">{p.category}</td>
-                      <td className="p-3 text-center font-bold font-mono">{p.currentStock}</td>
-                      <td className="p-3 text-right font-mono">
-                        {settings.currencySymbol} {(p.currentStock * p.costPrice).toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className="p-3 text-right font-mono font-bold text-emerald-600">
-                        {settings.currencySymbol} {(p.currentStock * p.sellingPrice).toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                      </td>
-                    </tr>
-                  ))}
+                  {products.map((p) => {
+                    const cleanCode = (p.code || '').trim().toLowerCase();
+                    const cleanName = (p.name || '').trim().toLowerCase();
+
+                    let purchased = 0;
+                    filteredPurchases.forEach((pu) => {
+                      (pu.items || []).forEach((item) => {
+                        if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                          purchased += Number(item.quantity || 0);
+                        }
+                      });
+                    });
+
+                    let sold = 0;
+                    filteredSales.forEach((sa) => {
+                      (sa.items || []).forEach((item) => {
+                        if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                          sold += Number(item.quantity || 0);
+                        }
+                      });
+                    });
+
+                    const opening = Number(p.openingStock || 0);
+
+                    return (
+                      <tr key={p.id} className="hover:bg-slate-50">
+                        <td className="p-3 font-mono font-bold">{p.code}</td>
+                        <td className="p-3 font-bold text-slate-900">{p.name}</td>
+                        <td className="p-3">{p.category}</td>
+                        <td className="p-3 text-center font-mono text-slate-600">{opening}</td>
+                        <td className="p-3 text-center font-mono font-bold text-emerald-700">
+                          {purchased > 0 ? `+${purchased}` : '0'}
+                        </td>
+                        <td className="p-3 text-center font-mono font-bold text-rose-700">
+                          {sold > 0 ? `-${sold}` : '0'}
+                        </td>
+                        <td className="p-3 text-center font-mono font-bold text-blue-900 bg-blue-50/30">
+                          {p.currentStock}
+                        </td>
+                        <td className="p-3 text-right font-mono">
+                          {settings.currencySymbol} {(p.currentStock * p.costPrice).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="p-3 text-right font-mono font-bold text-emerald-600">
+                          {settings.currencySymbol} {(p.currentStock * p.sellingPrice).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
