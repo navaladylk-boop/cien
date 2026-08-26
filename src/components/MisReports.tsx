@@ -73,6 +73,8 @@ export const MisReports: React.FC<MisReportsProps> = ({
   // Billed Items data aggregated from filtered sales with profitability
   const billedItemsData = useMemo(() => {
     const map = new Map<string, { code: string; name: string; qty: number; revenue: number; cost: number | null; profit: number | null; margin: number | null; invoiceCount: number }>();
+    
+    // Add Sales
     filteredSales.forEach((s) => {
       (s.items || []).forEach((item) => {
         const key = item.productId || item.productCode || item.productName;
@@ -106,8 +108,39 @@ export const MisReports: React.FC<MisReportsProps> = ({
         map.set(key, existing);
       });
     });
+
+    // Deduct Returns
+    StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).forEach((sr) => {
+      (sr.items || []).forEach((item) => {
+        const key = item.productId || item.productCode || item.productName;
+        const prod = products.find((p) => p.id === item.productId || p.code === item.productCode);
+        const hasCost = prod && prod.costPrice > 0;
+        const itemRevenue = item.total !== undefined ? item.total : (item.quantity * item.unitPrice);
+        const itemCost = hasCost ? (item.quantity * prod.costPrice) : null;
+
+        const existing = map.get(key) || {
+          code: item.productCode || prod?.code || '-',
+          name: item.productName || prod?.name || 'Unknown Item',
+          qty: 0,
+          revenue: 0,
+          cost: hasCost ? 0 : null,
+          profit: hasCost ? 0 : null,
+          margin: hasCost ? 0 : null,
+          invoiceCount: 0
+        };
+        existing.qty -= item.quantity;
+        existing.revenue -= itemRevenue;
+        if (hasCost && existing.cost !== null && itemCost !== null) {
+          existing.cost -= itemCost;
+          existing.profit = existing.revenue - existing.cost;
+          existing.margin = existing.revenue > 0 ? (existing.profit / existing.revenue) * 100 : 0;
+        }
+        map.set(key, existing);
+      });
+    });
+
     return Array.from(map.values()).sort((a, b) => (b.profit || 0) - (a.profit || 0));
-  }, [filteredSales, products]);
+  }, [filteredSales, products, company?.id, fromDate, toDate]);
 
   const categories: Array<{ id: MisCategory; label: string; icon: any; count: number }> = [
     { id: 'SALES', label: 'Sales MIS', icon: TrendingUp, count: filteredSales.length },
@@ -134,11 +167,11 @@ export const MisReports: React.FC<MisReportsProps> = ({
 
     if (activeCategory === 'SALES') {
       title = 'Sales MIS Analytics';
-      const totRev = filteredSales.reduce((sum, s) => sum + s.grandTotal, 0);
-      const totDue = filteredSales.reduce((sum, s) => sum + s.dueAmount, 0);
+      const totRev = filteredSales.reduce((sum, s) => sum + s.grandTotal, 0) - StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).reduce((sum, sr) => sum + sr.grandTotal, 0);
+      const totDue = filteredSales.reduce((sum, s) => sum + s.dueAmount, 0); // Sales Returns are usually settled, but we leave due amount as sum of invoices.
       lines.push(
-        `• Total Invoices: ${filteredSales.length}`,
-        `• Total Sales Revenue: ${settings.currencySymbol} ${totRev.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        `• Total Invoices: ${filteredSales.length}, Returns: ${StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).length}`,
+        `• Net Sales Revenue: ${settings.currencySymbol} ${totRev.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
         `• Total Outstanding Due: ${settings.currencySymbol} ${totDue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
       );
     } else if (activeCategory === 'BILLED_ITEMS') {
@@ -331,13 +364,14 @@ export const MisReports: React.FC<MisReportsProps> = ({
         <div className="lg:col-span-9 bg-white rounded-2xl border border-slate-200 shadow-xs p-6 overflow-hidden">
           {activeCategory === 'SALES' && (
             <div className="space-y-4">
-              <h3 className="font-bold text-slate-900 text-base border-b border-slate-200 pb-2">Sales Analytics & Summary</h3>
+              <h3 className="font-bold text-slate-900 text-base border-b border-slate-200 pb-2">Sales Analytics & Summary (Net)</h3>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-100 text-slate-700 font-bold">
                     <tr>
-                      <th className="p-2.5">Invoice #</th>
+                      <th className="p-2.5">Ref #</th>
                       <th className="p-2.5">Date</th>
+                      <th className="p-2.5">Type</th>
                       <th className="p-2.5">Customer</th>
                       <th className="p-2.5 text-right">Grand Total ({settings.currencySymbol})</th>
                       <th className="p-2.5 text-right">Paid</th>
@@ -349,19 +383,50 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       <tr key={s.id} className="hover:bg-slate-50">
                         <td className="p-2.5 font-bold font-mono text-blue-600">{s.invoiceNumber}</td>
                         <td className="p-2.5">{s.date}</td>
+                        <td className="p-2.5 text-emerald-700 font-bold">Sale ({s.type})</td>
                         <td className="p-2.5 font-medium">{s.customerName}</td>
-                        <td className="p-2.5 text-right font-bold">{s.grandTotal.toFixed(2)}</td>
+                        <td className="p-2.5 text-right font-bold text-emerald-700">{s.grandTotal.toFixed(2)}</td>
                         <td className="p-2.5 text-right text-emerald-600">{s.paidAmount.toFixed(2)}</td>
                         <td className="p-2.5 text-right text-rose-600 font-bold">{s.dueAmount.toFixed(2)}</td>
                       </tr>
                     ))}
+                    {StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).map((sr) => (
+                      <tr key={sr.id} className="bg-rose-50/30 hover:bg-rose-50">
+                        <td className="p-2.5 font-bold font-mono text-rose-600">{sr.returnNumber}</td>
+                        <td className="p-2.5 text-rose-700">{sr.date}</td>
+                        <td className="p-2.5 text-rose-700 font-bold">Return ({sr.type})</td>
+                        <td className="p-2.5 font-medium text-rose-900">{sr.customerName}</td>
+                        <td className="p-2.5 text-right font-bold text-rose-700">-{sr.grandTotal.toFixed(2)}</td>
+                        <td className="p-2.5 text-right text-rose-600">-{sr.paidAmount.toFixed(2)}</td>
+                        <td className="p-2.5 text-right text-slate-500">-</td>
+                      </tr>
+                    ))}
+                    {filteredSales.length === 0 && StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="p-4 text-center text-slate-400 italic">No sales or returns found.</td>
+                      </tr>
+                    )}
                   </tbody>
                   <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
                     <tr>
-                      <td colSpan={3} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({filteredSales.length} Sales):</td>
-                      <td className="p-2.5 text-right font-mono">{filteredSales.reduce((a, s) => a + s.grandTotal, 0).toFixed(2)}</td>
-                      <td className="p-2.5 text-right font-mono text-emerald-600">{filteredSales.reduce((a, s) => a + s.paidAmount, 0).toFixed(2)}</td>
-                      <td className="p-2.5 text-right font-mono text-rose-600">{filteredSales.reduce((a, s) => a + s.dueAmount, 0).toFixed(2)}</td>
+                      <td colSpan={4} className="p-2.5 text-right uppercase text-xs text-slate-500">
+                        Total ({filteredSales.length} Sales, {StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).length} Returns):
+                      </td>
+                      <td className="p-2.5 text-right font-mono">
+                        {(
+                          filteredSales.reduce((a, s) => a + s.grandTotal, 0) - 
+                          StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).reduce((a, sr) => a + sr.grandTotal, 0)
+                        ).toFixed(2)}
+                      </td>
+                      <td className="p-2.5 text-right font-mono text-emerald-600">
+                        {(
+                          filteredSales.reduce((a, s) => a + s.paidAmount, 0) - 
+                          StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).reduce((a, sr) => a + sr.paidAmount, 0)
+                        ).toFixed(2)}
+                      </td>
+                      <td className="p-2.5 text-right font-mono text-rose-600">
+                        {(filteredSales.reduce((a, s) => a + s.dueAmount, 0)).toFixed(2)}
+                      </td>
                     </tr>
                   </tfoot>
                 </table>
@@ -674,32 +739,83 @@ export const MisReports: React.FC<MisReportsProps> = ({
                         </tr>
                       );
                     })}
+                    {StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).map((sr) => {
+                      let allCostAvailable = true;
+                      let totalCost = 0;
+                      (sr.items || []).forEach((item) => {
+                        const prod = products.find((p) => p.id === item.productId || p.code === item.productCode);
+                        if (prod && prod.costPrice > 0) {
+                          totalCost += item.quantity * prod.costPrice;
+                        } else {
+                          allCostAvailable = false;
+                        }
+                      });
+                      const grossMargin = allCostAvailable ? (sr.grandTotal - totalCost) : null;
+                      return (
+                        <tr key={sr.id} className="bg-rose-50/30 hover:bg-rose-50">
+                          <td className="p-2.5 font-mono font-bold text-rose-600">{sr.returnNumber}</td>
+                          <td className="p-2.5 text-rose-900">{sr.customerName}</td>
+                          <td className="p-2.5 text-right font-mono text-rose-700">-{sr.grandTotal.toFixed(2)}</td>
+                          <td className="p-2.5 text-right font-mono text-slate-500">{allCostAvailable ? `-${totalCost.toFixed(2)}` : 'Cost Unavailable'}</td>
+                          <td className="p-2.5 text-right font-mono font-bold text-rose-600">
+                            {grossMargin !== null ? `-${grossMargin.toFixed(2)}` : 'N/A'}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                   <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
                     <tr>
-                      <td colSpan={2} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({filteredSales.length} Invoices):</td>
-                      <td className="p-2.5 text-right font-mono">{filteredSales.reduce((acc, s) => acc + s.grandTotal, 0).toFixed(2)}</td>
+                      <td colSpan={2} className="p-2.5 text-right uppercase text-xs text-slate-500">Net Total ({filteredSales.length} Sales, {StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).length} Returns):</td>
+                      <td className="p-2.5 text-right font-mono">
+                        {(
+                          filteredSales.reduce((acc, s) => acc + s.grandTotal, 0) - 
+                          StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).reduce((acc, sr) => acc + sr.grandTotal, 0)
+                        ).toFixed(2)}
+                      </td>
                       <td className="p-2.5 text-right font-mono text-slate-500">
-                        {filteredSales.reduce((acc, s) => {
-                          let tc = 0;
-                          (s.items || []).forEach(item => {
-                            const prod = products.find(p => p.id === item.productId || p.code === item.productCode);
-                            if (prod && prod.costPrice > 0) tc += item.quantity * prod.costPrice;
-                          });
-                          return acc + tc;
-                        }, 0).toFixed(2)}
+                        {(
+                          filteredSales.reduce((acc, s) => {
+                            let tc = 0;
+                            (s.items || []).forEach(item => {
+                              const prod = products.find(p => p.id === item.productId || p.code === item.productCode);
+                              if (prod && prod.costPrice > 0) tc += item.quantity * prod.costPrice;
+                            });
+                            return acc + tc;
+                          }, 0) - 
+                          StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).reduce((acc, sr) => {
+                            let tc = 0;
+                            (sr.items || []).forEach(item => {
+                              const prod = products.find(p => p.id === item.productId || p.code === item.productCode);
+                              if (prod && prod.costPrice > 0) tc += item.quantity * prod.costPrice;
+                            });
+                            return acc + tc;
+                          }, 0)
+                        ).toFixed(2)}
                       </td>
                       <td className="p-2.5 text-right font-mono text-emerald-600 font-bold">
-                        {filteredSales.reduce((acc, s) => {
-                          let tc = 0;
-                          let avail = true;
-                          (s.items || []).forEach(item => {
-                            const prod = products.find(p => p.id === item.productId || p.code === item.productCode);
-                            if (prod && prod.costPrice > 0) tc += item.quantity * prod.costPrice;
-                            else avail = false;
-                          });
-                          return avail ? acc + (s.grandTotal - tc) : acc;
-                        }, 0).toFixed(2)}
+                        {(
+                          filteredSales.reduce((acc, s) => {
+                            let tc = 0;
+                            let avail = true;
+                            (s.items || []).forEach(item => {
+                              const prod = products.find(p => p.id === item.productId || p.code === item.productCode);
+                              if (prod && prod.costPrice > 0) tc += item.quantity * prod.costPrice;
+                              else avail = false;
+                            });
+                            return avail ? acc + (s.grandTotal - tc) : acc;
+                          }, 0) -
+                          StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).reduce((acc, sr) => {
+                            let tc = 0;
+                            let avail = true;
+                            (sr.items || []).forEach(item => {
+                              const prod = products.find(p => p.id === item.productId || p.code === item.productCode);
+                              if (prod && prod.costPrice > 0) tc += item.quantity * prod.costPrice;
+                              else avail = false;
+                            });
+                            return avail ? acc + (sr.grandTotal - tc) : acc;
+                          }, 0)
+                        ).toFixed(2)}
                       </td>
                     </tr>
                   </tfoot>

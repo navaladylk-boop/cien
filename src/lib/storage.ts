@@ -3214,18 +3214,20 @@ export const StorageService = {
     const todayStr = new Date().toISOString().split('T')[0];
 
     const sales = this.getSales(companyId);
+    const saleReturns = this.getSaleReturns(companyId);
     const purchases = this.getPurchases(companyId);
+    const purchaseReturns = this.getPurchaseReturns(companyId);
     const customers = this.getCustomers(companyId);
     const suppliers = this.getSuppliers(companyId);
     const products = this.getProducts(companyId);
 
-    const todaySalesTotal = sales
-      .filter((s) => s.date === todayStr)
-      .reduce((sum, s) => sum + Number(s.grandTotal || 0), 0);
+    const todaySalesTotal = 
+      sales.filter((s) => s.date === todayStr).reduce((sum, s) => sum + Number(s.grandTotal || 0), 0) -
+      saleReturns.filter((sr) => sr.date === todayStr).reduce((sum, sr) => sum + Number(sr.grandTotal || 0), 0);
 
-    const todayPurchasesTotal = purchases
-      .filter((p) => p.date === todayStr)
-      .reduce((sum, p) => sum + Number(p.grandTotal || 0), 0);
+    const todayPurchasesTotal = 
+      purchases.filter((p) => p.date === todayStr).reduce((sum, p) => sum + Number(p.grandTotal || 0), 0) -
+      purchaseReturns.filter((pr) => pr.date === todayStr).reduce((sum, pr) => sum + Number(pr.grandTotal || 0), 0);
 
     const totalCustOutstanding = customers.reduce(
       (sum, c) => sum + Number(c.outstandingBalance || 0),

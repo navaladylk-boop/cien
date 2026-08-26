@@ -406,17 +406,18 @@ export const Reports: React.FC<ReportsProps> = ({
 
     if (activeReport === 'SALES') {
       title = 'Sales Summary Report';
-      const totalRev = filteredSales.reduce((sum, s) => sum + s.grandTotal, 0);
-      const totalPaid = filteredSales.reduce((sum, s) => sum + s.paidAmount, 0);
+      const validReturns = saleReturns.filter((sr) => isDateInRange(sr.date));
+      const totalRev = filteredSales.reduce((sum, s) => sum + s.grandTotal, 0) - validReturns.reduce((sum, sr) => sum + sr.grandTotal, 0);
+      const totalPaid = filteredSales.reduce((sum, s) => sum + s.paidAmount, 0) - validReturns.reduce((sum, sr) => sum + sr.paidAmount, 0);
       const totalDue = filteredSales.reduce((sum, s) => sum + s.dueAmount, 0);
       lines = [
         `📊 *${settings.companyName || 'Company Name'}*`,
         `*Sales Summary Report*`,
         `*Date:* ${new Date().toISOString().split('T')[0]}`,
         `------------------------------`,
-        `• Total Invoices: ${filteredSales.length}`,
-        `• Total Revenue: ${settings.currencySymbol} ${totalRev.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
-        `• Total Collected: ${settings.currencySymbol} ${totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        `• Total Invoices: ${filteredSales.length}, Returns: ${validReturns.length}`,
+        `• Net Revenue: ${settings.currencySymbol} ${totalRev.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        `• Net Collected: ${settings.currencySymbol} ${totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
         `• Total Pending Due: ${settings.currencySymbol} ${totalDue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
         `\n*Recent Sales Invoices:*`,
         ...filteredSales.slice(0, 5).map((s) => `• ${s.invoiceNumber} (${s.customerName}): ${settings.currencySymbol}${s.grandTotal}`)
@@ -727,17 +728,21 @@ export const Reports: React.FC<ReportsProps> = ({
           <div className="space-y-4">
             <div className="flex items-center justify-between pb-4 border-b border-slate-200">
               <div>
-                <h3 className="font-bold text-lg text-slate-900">Sales Report</h3>
-                <p className="text-xs text-slate-500">Summary of total invoices & revenue</p>
+                <h3 className="font-bold text-lg text-slate-900">Sales & Returns Report</h3>
+                <p className="text-xs text-slate-500">Summary of total invoices, returns & net revenue</p>
               </div>
               <button
-                onClick={() =>
+                onClick={() => {
+                  const exportData = [
+                    ...filteredSales.map((s) => [s.invoiceNumber, s.customerName, s.date, `Sale (${s.type})`, s.grandTotal, s.paidAmount, s.dueAmount]),
+                    ...saleReturns.filter((sr) => isDateInRange(sr.date)).map((sr) => [sr.returnNumber, sr.customerName, sr.date, `Return (${sr.type})`, -sr.grandTotal, -sr.paidAmount, 0])
+                  ];
                   handleExportCSV(
                     'SalesReport',
                     ['InvoiceNo', 'Customer', 'Date', 'Type', 'GrandTotal', 'Paid', 'Due'],
-                    filteredSales.map((s) => [s.invoiceNumber, s.customerName, s.date, s.type, s.grandTotal, s.paidAmount, s.dueAmount])
-                  )
-                }
+                    exportData
+                  );
+                }}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-bold cursor-pointer"
               >
                 <Download className="w-4 h-4" /> Export CSV
@@ -748,7 +753,7 @@ export const Reports: React.FC<ReportsProps> = ({
               <table className="w-full text-left text-xs border-collapse min-w-[600px]">
                 <thead>
                   <tr className="bg-slate-50 text-slate-600 font-bold uppercase border-b border-slate-200">
-                    <th className="p-3">Invoice No</th>
+                    <th className="p-3">Ref No</th>
                     <th className="p-3">Customer</th>
                     <th className="p-3">Date</th>
                     <th className="p-3">Type</th>
@@ -761,18 +766,39 @@ export const Reports: React.FC<ReportsProps> = ({
                       <td className="p-3 font-mono font-bold text-blue-600">{s.invoiceNumber}</td>
                       <td className="p-3 font-bold">{s.customerName}</td>
                       <td className="p-3 text-slate-500">{s.date}</td>
-                      <td className="p-3 font-bold">{s.type}</td>
-                      <td className="p-3 text-right font-mono font-bold">
+                      <td className="p-3 font-bold text-emerald-700">Sale ({s.type})</td>
+                      <td className="p-3 text-right font-mono font-bold text-emerald-700">
                         {settings.currencySymbol} {s.grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                       </td>
                     </tr>
                   ))}
+                  {saleReturns.filter((sr) => isDateInRange(sr.date)).map((sr) => (
+                    <tr key={sr.id} className="bg-rose-50/20">
+                      <td className="p-3 font-mono font-bold text-rose-600">{sr.returnNumber}</td>
+                      <td className="p-3 font-bold text-rose-900">{sr.customerName}</td>
+                      <td className="p-3 text-rose-500">{sr.date}</td>
+                      <td className="p-3 font-bold text-rose-700">Return ({sr.type})</td>
+                      <td className="p-3 text-right font-mono font-bold text-rose-700">
+                        -{settings.currencySymbol} {sr.grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredSales.length === 0 && saleReturns.filter((sr) => isDateInRange(sr.date)).length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="p-4 text-center text-slate-400 italic">No sales or returns found for the selected period.</td>
+                    </tr>
+                  )}
                 </tbody>
                 <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-slate-900">
                   <tr>
-                    <td colSpan={4} className="p-3 text-right uppercase text-xs text-slate-500">Total ({filteredSales.length} Sales):</td>
-                    <td className="p-3 text-right font-mono text-slate-900">
-                      {settings.currencySymbol} {filteredSales.reduce((acc, s) => acc + s.grandTotal, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    <td colSpan={4} className="p-3 text-right uppercase text-xs text-slate-500">
+                      Total ({filteredSales.length} Sales, {saleReturns.filter((sr) => isDateInRange(sr.date)).length} Returns):
+                    </td>
+                    <td className="p-3 text-right font-mono text-slate-900 text-sm">
+                      {settings.currencySymbol} {(
+                        filteredSales.reduce((acc, s) => acc + s.grandTotal, 0) - 
+                        saleReturns.filter((sr) => isDateInRange(sr.date)).reduce((acc, sr) => acc + sr.grandTotal, 0)
+                      ).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                     </td>
                   </tr>
                 </tfoot>
