@@ -40,6 +40,7 @@ import { checkPermission } from '../lib/permissions';
 import { shareReportViaWhatsApp } from '../lib/whatsapp';
 import { ReportActionsToolbar } from './ReportActionsToolbar';
 import { getDateRangePresets } from '../lib/dateUtils';
+import { StorageService } from '../lib/storage';
 
 interface ReportsProps {
   sales: SaleInvoice[];
@@ -384,12 +385,17 @@ export const Reports: React.FC<ReportsProps> = ({
   const totalStockSalesVal = products.reduce((sum, p) => sum + p.currentStock * p.sellingPrice, 0);
 
   // Cash Book Entries
+  const saleReturns = StorageService.getSaleReturns();
+  const purchaseReturns = StorageService.getPurchaseReturns();
+
   const cashBookRows = [
     { date: 'Initial', ref: 'SETUP', desc: 'Initial Opening Cash', type: 'IN', amount: settings.initialCashBalance },
     ...filteredSales.map((s) => ({ date: s.date, ref: s.invoiceNumber, desc: `Sale (${s.customerName})`, type: 'IN', amount: s.paidAmount })),
     ...filteredReceipts.filter((r) => r.paymentMode === 'CASH').map((r) => ({ date: r.date, ref: r.receiptNumber, desc: `Receipt (${r.customerName})`, type: 'IN', amount: r.amount })),
+    ...saleReturns.filter((sr) => sr.type === 'CASH' && isDateInRange(sr.date)).map((sr) => ({ date: sr.date, ref: sr.returnNumber, desc: `Sales Return Refund (${sr.customerName})`, type: 'OUT', amount: sr.grandTotal })),
     ...filteredPurchases.map((p) => ({ date: p.date, ref: p.purchaseNumber, desc: `Purchase (${p.supplierName})`, type: 'OUT', amount: p.paidAmount })),
     ...filteredPayments.filter((pm) => pm.paymentMode === 'CASH').map((pm) => ({ date: pm.date, ref: pm.paymentNumber, desc: `Payment (${pm.supplierName})`, type: 'OUT', amount: pm.amount })),
+    ...purchaseReturns.filter((pr) => pr.type === 'CASH' && isDateInRange(pr.date)).map((pr) => ({ date: pr.date, ref: pr.returnNumber, desc: `Purchase Return Cash (${pr.supplierName})`, type: 'IN', amount: pr.grandTotal })),
     ...filteredExpenses.filter((e) => e.paymentMode === 'CASH').map((e) => ({ date: e.date, ref: e.expenseNumber, desc: `Expense (${e.category})`, type: 'OUT', amount: e.amount }))
   ].filter((row) => row.amount > 0);
 
@@ -944,6 +950,53 @@ export const Reports: React.FC<ReportsProps> = ({
                     );
                   })}
                 </tbody>
+                <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-slate-900">
+                  <tr>
+                    <td colSpan={3} className="p-3 text-right uppercase text-xs text-slate-500">Total ({products.length} Products):</td>
+                    <td className="p-3 text-center font-mono">
+                      {products.reduce((acc, p) => acc + Number(p.openingStock || 0), 0)}
+                    </td>
+                    <td className="p-3 text-center font-mono text-emerald-700">
+                      {products.reduce((acc, p) => {
+                        const cleanCode = (p.code || '').trim().toLowerCase();
+                        const cleanName = (p.name || '').trim().toLowerCase();
+                        let purchased = 0;
+                        filteredPurchases.forEach((pu) => {
+                          (pu.items || []).forEach((item) => {
+                            if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                              purchased += Number(item.quantity || 0);
+                            }
+                          });
+                        });
+                        return acc + purchased;
+                      }, 0)}
+                    </td>
+                    <td className="p-3 text-center font-mono text-rose-700">
+                      {products.reduce((acc, p) => {
+                        const cleanCode = (p.code || '').trim().toLowerCase();
+                        const cleanName = (p.name || '').trim().toLowerCase();
+                        let sold = 0;
+                        filteredSales.forEach((sa) => {
+                          (sa.items || []).forEach((item) => {
+                            if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                              sold += Number(item.quantity || 0);
+                            }
+                          });
+                        });
+                        return acc + sold;
+                      }, 0)}
+                    </td>
+                    <td className="p-3 text-center font-mono font-bold text-blue-900 bg-blue-50/30">
+                      {products.reduce((acc, p) => acc + Number(p.currentStock || 0), 0)}
+                    </td>
+                    <td className="p-3 text-right font-mono">
+                      {settings.currencySymbol} {products.reduce((acc, p) => acc + (Number(p.currentStock || 0) * Number(p.costPrice || 0)), 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </td>
+                    <td className="p-3 text-right font-mono font-bold text-emerald-600">
+                      {settings.currencySymbol} {products.reduce((acc, p) => acc + (Number(p.currentStock || 0) * Number(p.sellingPrice || 0)), 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>

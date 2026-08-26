@@ -335,7 +335,7 @@ export const SearchableCustomerSelect: React.FC<SearchableCustomerSelectProps> =
                   onMouseEnter={() => setHighlightIndex(idx)}
                   className={`p-3 hover:bg-blue-50/90 cursor-pointer flex items-center justify-between gap-3 transition-colors ${
                     isSelected ? 'bg-blue-50 font-semibold' : ''
-                  } ${isHighlighted ? 'bg-slate-100' : ''}`}
+                  } ${isHighlighted ? 'bg-blue-100 ring-1 ring-inset ring-blue-300' : ''}`}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -695,7 +695,7 @@ export const SearchableSupplierSelect: React.FC<SearchableSupplierSelectProps> =
                   onMouseEnter={() => setHighlightIndex(idx)}
                   className={`p-3 hover:bg-purple-50/90 cursor-pointer flex items-center justify-between gap-3 transition-colors ${
                     isSelected ? 'bg-purple-50 font-semibold' : ''
-                  } ${isHighlighted ? 'bg-slate-100' : ''}`}
+                  } ${isHighlighted ? 'bg-purple-100 ring-1 ring-inset ring-purple-300' : ''}`}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -966,7 +966,7 @@ export const SearchableProductSelect: React.FC<SearchableProductSelectProps> = (
                   onMouseEnter={() => setHighlightIndex(idx)}
                   className={`p-2.5 hover:bg-blue-50/90 cursor-pointer flex items-center justify-between gap-2 transition-colors ${
                     isSelected ? 'bg-blue-50 font-semibold' : ''
-                  } ${isHighlighted ? 'bg-slate-100' : ''}`}
+                  } ${isHighlighted ? 'bg-blue-100 ring-1 ring-inset ring-blue-300' : ''}`}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">

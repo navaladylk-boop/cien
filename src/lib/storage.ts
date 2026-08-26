@@ -3174,6 +3174,13 @@ export const StorageService = {
       }
     });
 
+    const saleReturns = this.getSaleReturns(companyId);
+    saleReturns.forEach((sr) => {
+      if (sr.type === 'CASH') {
+        balance -= Number(sr.grandTotal || 0);
+      }
+    });
+
     const purchases = this.getPurchases(companyId);
     purchases.forEach((p) => {
       balance -= Number(p.paidAmount || 0);
@@ -3183,6 +3190,13 @@ export const StorageService = {
     payments.forEach((p) => {
       if (p.paymentMode === 'CASH') {
         balance -= Number(p.amount || 0);
+      }
+    });
+
+    const purchaseReturns = this.getPurchaseReturns(companyId);
+    purchaseReturns.forEach((pr) => {
+      if (pr.type === 'CASH') {
+        balance += Number(pr.grandTotal || 0);
       }
     });
 
