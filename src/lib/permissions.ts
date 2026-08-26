@@ -58,6 +58,17 @@ export const MODULE_PERMISSIONS: ModulePermissionDefinition[] = [
     ]
   },
   {
+    module: 'sales_return',
+    label: 'Sales Return (Credit Notes)',
+    actions: [
+      { action: 'view', label: 'View Sales Returns' },
+      { action: 'add', label: 'Create Sales Return' },
+      { action: 'edit', label: 'Edit Sales Return' },
+      { action: 'delete', label: 'Void / Delete Return' },
+      { action: 'print', label: 'Print Credit Note' }
+    ]
+  },
+  {
     module: 'purchases',
     label: 'Purchases (Bills)',
     actions: [
@@ -67,6 +78,17 @@ export const MODULE_PERMISSIONS: ModulePermissionDefinition[] = [
       { action: 'delete', label: 'Void / Delete Purchase' },
       { action: 'print', label: 'Print Purchase Bill' },
       { action: 'export', label: 'Export Purchase Log' }
+    ]
+  },
+  {
+    module: 'purchase_return',
+    label: 'Purchase Return (Debit Notes)',
+    actions: [
+      { action: 'view', label: 'View Purchase Returns' },
+      { action: 'add', label: 'Create Purchase Return' },
+      { action: 'edit', label: 'Edit Purchase Return' },
+      { action: 'delete', label: 'Void / Delete Return' },
+      { action: 'print', label: 'Print Debit Note' }
     ]
   },
   {
@@ -99,6 +121,17 @@ export const MODULE_PERMISSIONS: ModulePermissionDefinition[] = [
       { action: 'add', label: 'Record New Expense' },
       { action: 'edit', label: 'Edit Expense' },
       { action: 'delete', label: 'Delete Expense' }
+    ]
+  },
+  {
+    module: 'journal',
+    label: 'Journal (Manual Vouchers)',
+    actions: [
+      { action: 'view', label: 'View Journal Entries' },
+      { action: 'add', label: 'Create Journal Entry (JV)' },
+      { action: 'edit', label: 'Edit Journal Entry' },
+      { action: 'delete', label: 'Void Journal Entry' },
+      { action: 'print', label: 'Print JV Slip' }
     ]
   },
   {
@@ -450,6 +483,25 @@ export function checkPermission(
       Boolean(effectivePermissions[`reports:${action}` as PermissionKey]) ||
       Boolean(effectivePermissions[`customer_receipts:${action}` as PermissionKey]) ||
       Boolean(effectivePermissions[`supplier_payments:${action}` as PermissionKey])
+    );
+  }
+
+  if (module === 'sales_return') {
+    if (effectivePermissions[`sales_return:${action}` as PermissionKey]) return true;
+    return Boolean(effectivePermissions[`sales:${action}` as PermissionKey]);
+  }
+
+  if (module === 'purchase_return') {
+    if (effectivePermissions[`purchase_return:${action}` as PermissionKey]) return true;
+    return Boolean(effectivePermissions[`purchases:${action}` as PermissionKey]);
+  }
+
+  if (module === 'journal') {
+    if (effectivePermissions[`journal:${action}` as PermissionKey]) return true;
+    return (
+      Boolean(effectivePermissions[`accounting:${action}` as PermissionKey]) ||
+      Boolean(effectivePermissions[`reports:${action}` as PermissionKey]) ||
+      Boolean(effectivePermissions[`ledger:${action}` as PermissionKey])
     );
   }
 
