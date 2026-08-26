@@ -1225,6 +1225,7 @@ export const SupabaseSyncService = {
         customer_name: saleReturn.customerName,
         type: saleReturn.type,
         reason: saleReturn.reason || '',
+        items: saleReturn.items || [],
         subtotal: Number(saleReturn.subtotal || 0),
         discount: Number(saleReturn.discount || 0),
         grand_total: Number(saleReturn.grandTotal || 0),
@@ -1265,6 +1266,7 @@ export const SupabaseSyncService = {
         supplier_name: purchaseReturn.supplierName,
         type: purchaseReturn.type,
         reason: purchaseReturn.reason || '',
+        items: purchaseReturn.items || [],
         subtotal: Number(purchaseReturn.subtotal || 0),
         discount: Number(purchaseReturn.discount || 0),
         grand_total: Number(purchaseReturn.grandTotal || 0),
@@ -2003,6 +2005,75 @@ export const SupabaseSyncService = {
       }));
     } catch (e) {
       console.error('Error fetching purchases from Supabase:', e);
+      return null;
+    }
+  },
+
+  async fetchAllRemoteSaleReturns(companyId?: string): Promise<SaleReturn[] | null> {
+    const client = getSupabaseClient();
+    if (!client) return null;
+    try {
+      let query = client.from('busy_ufo_sale_returns').select('*').order('date', { ascending: false });
+      if (companyId) query = query.eq('company_id', companyId);
+      const { data, error } = await query;
+      if (error || !data) return null;
+      return data.map((row: any) => ({
+        id: row.id,
+        requestId: row.request_id || row.id,
+        companyId: row.company_id || 'comp-1',
+        returnNumber: row.return_number,
+        invoiceId: row.invoice_id || undefined,
+        invoiceNumber: row.invoice_number || undefined,
+        date: row.date,
+        customerId: row.customer_id || '',
+        customerName: row.customer_name,
+        type: row.type as any,
+        reason: row.reason || '',
+        items: typeof row.items === 'string' ? JSON.parse(row.items) : (row.items || []),
+        subtotal: Number(row.subtotal || 0),
+        discount: Number(row.discount || 0),
+        grandTotal: Number(row.grand_total || 0),
+        refundedAmount: Number(row.refunded_amount || 0),
+        notes: row.notes || '',
+        status: row.status || 'COMPLETED',
+        createdAt: row.created_at || new Date().toISOString()
+      }));
+    } catch (e) {
+      console.error('Error fetching sale returns from Supabase:', e);
+      return null;
+    }
+  },
+
+  async fetchAllRemotePurchaseReturns(companyId?: string): Promise<PurchaseReturn[] | null> {
+    const client = getSupabaseClient();
+    if (!client) return null;
+    try {
+      let query = client.from('busy_ufo_purchase_returns').select('*').order('date', { ascending: false });
+      if (companyId) query = query.eq('company_id', companyId);
+      const { data, error } = await query;
+      if (error || !data) return null;
+      return data.map((row: any) => ({
+        id: row.id,
+        requestId: row.request_id || row.id,
+        companyId: row.company_id || 'comp-1',
+        returnNumber: row.return_number,
+        purchaseId: row.purchase_id || undefined,
+        purchaseNumber: row.purchase_number || undefined,
+        date: row.date,
+        supplierId: row.supplier_id || '',
+        supplierName: row.supplier_name,
+        type: row.type as any,
+        reason: row.reason || '',
+        items: typeof row.items === 'string' ? JSON.parse(row.items) : (row.items || []),
+        subtotal: Number(row.subtotal || 0),
+        discount: Number(row.discount || 0),
+        grandTotal: Number(row.grand_total || 0),
+        notes: row.notes || '',
+        status: row.status || 'COMPLETED',
+        createdAt: row.created_at || new Date().toISOString()
+      }));
+    } catch (e) {
+      console.error('Error fetching purchase returns from Supabase:', e);
       return null;
     }
   },

@@ -356,6 +356,14 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={3} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({filteredSales.length} Sales):</td>
+                      <td className="p-2.5 text-right font-mono">{filteredSales.reduce((a, s) => a + s.grandTotal, 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono text-emerald-600">{filteredSales.reduce((a, s) => a + s.paidAmount, 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono text-rose-600">{filteredSales.reduce((a, s) => a + s.dueAmount, 0).toFixed(2)}</td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
@@ -393,6 +401,16 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={3} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({billedItemsData.length} Items):</td>
+                      <td className="p-2.5 text-center font-mono text-emerald-700">{billedItemsData.reduce((a, i) => a + i.qty, 0)}</td>
+                      <td className="p-2.5 text-right font-mono">{billedItemsData.reduce((a, i) => a + i.revenue, 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono">{billedItemsData.reduce((a, i) => a + (i.cost || 0), 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono text-emerald-700">{billedItemsData.reduce((a, i) => a + (i.profit || 0), 0).toFixed(2)}</td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
@@ -423,6 +441,13 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={3} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({filteredPurchases.length} Purchases):</td>
+                      <td className="p-2.5 text-right font-mono">{filteredPurchases.reduce((a, p) => a + p.grandTotal, 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono text-emerald-600">{filteredPurchases.reduce((a, p) => a + p.paidAmount, 0).toFixed(2)}</td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
@@ -486,6 +511,51 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       );
                     })}
                   </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={2} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({products.length} Products):</td>
+                      <td className="p-2.5 text-center font-mono">
+                        {products.reduce((acc, p) => acc + Number(p.openingStock || 0), 0)}
+                      </td>
+                      <td className="p-2.5 text-center font-mono text-emerald-700">
+                        {products.reduce((acc, p) => {
+                          const cleanCode = (p.code || '').trim().toLowerCase();
+                          const cleanName = (p.name || '').trim().toLowerCase();
+                          let purchased = 0;
+                          filteredPurchases.forEach((pu) => {
+                            (pu.items || []).forEach((item) => {
+                              if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                                purchased += Number(item.quantity || 0);
+                              }
+                            });
+                          });
+                          return acc + purchased;
+                        }, 0)}
+                      </td>
+                      <td className="p-2.5 text-center font-mono text-rose-700">
+                        {products.reduce((acc, p) => {
+                          const cleanCode = (p.code || '').trim().toLowerCase();
+                          const cleanName = (p.name || '').trim().toLowerCase();
+                          let sold = 0;
+                          filteredSales.forEach((sa) => {
+                            (sa.items || []).forEach((item) => {
+                              if (item.productId === p.id || (cleanCode && item.productCode?.trim().toLowerCase() === cleanCode) || (cleanName && item.productName?.trim().toLowerCase() === cleanName)) {
+                                sold += Number(item.quantity || 0);
+                              }
+                            });
+                          });
+                          return acc + sold;
+                        }, 0)}
+                      </td>
+                      <td className="p-2.5 text-center font-mono text-blue-900">
+                        {products.reduce((acc, p) => acc + Number(p.currentStock || 0), 0)}
+                      </td>
+                      <td></td>
+                      <td className="p-2.5 text-right font-mono">
+                        {products.reduce((acc, p) => acc + (Number(p.currentStock || 0) * Number(p.costPrice || 0)), 0).toFixed(2)}
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
@@ -516,6 +586,13 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={2} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({customers.length} Customers):</td>
+                      <td className="p-2.5 text-right font-mono">{customers.reduce((acc, c) => acc + c.openingBalance, 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono text-rose-600">{customers.reduce((acc, c) => acc + c.outstandingBalance, 0).toFixed(2)}</td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
@@ -546,6 +623,13 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={2} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({suppliers.length} Suppliers):</td>
+                      <td className="p-2.5 text-right font-mono">{suppliers.reduce((acc, s) => acc + s.openingBalance, 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono text-amber-700">{suppliers.reduce((acc, s) => acc + s.payableBalance, 0).toFixed(2)}</td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
@@ -591,6 +675,34 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       );
                     })}
                   </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={2} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({filteredSales.length} Invoices):</td>
+                      <td className="p-2.5 text-right font-mono">{filteredSales.reduce((acc, s) => acc + s.grandTotal, 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono text-slate-500">
+                        {filteredSales.reduce((acc, s) => {
+                          let tc = 0;
+                          (s.items || []).forEach(item => {
+                            const prod = products.find(p => p.id === item.productId || p.code === item.productCode);
+                            if (prod && prod.costPrice > 0) tc += item.quantity * prod.costPrice;
+                          });
+                          return acc + tc;
+                        }, 0).toFixed(2)}
+                      </td>
+                      <td className="p-2.5 text-right font-mono text-emerald-600 font-bold">
+                        {filteredSales.reduce((acc, s) => {
+                          let tc = 0;
+                          let avail = true;
+                          (s.items || []).forEach(item => {
+                            const prod = products.find(p => p.id === item.productId || p.code === item.productCode);
+                            if (prod && prod.costPrice > 0) tc += item.quantity * prod.costPrice;
+                            else avail = false;
+                          });
+                          return avail ? acc + (s.grandTotal - tc) : acc;
+                        }, 0).toFixed(2)}
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
@@ -641,6 +753,12 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={4} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({filteredExpenses.length} Expenses):</td>
+                      <td className="p-2.5 text-right font-mono text-slate-900">{filteredExpenses.reduce((acc, e) => acc + e.amount, 0).toFixed(2)}</td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
@@ -677,6 +795,13 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={4} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({filteredPdcs.length} Cheques):</td>
+                      <td className="p-2.5 text-right font-mono text-slate-900">{filteredPdcs.reduce((acc, p) => acc + p.amount, 0).toFixed(2)}</td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>

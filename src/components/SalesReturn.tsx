@@ -387,6 +387,18 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
                 ))
               )}
             </tbody>
+            <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-slate-900">
+              <tr>
+                <td colSpan={5} className="px-5 py-3.5 text-right uppercase text-xs text-slate-500">Total ({filteredReturns.length} Returns):</td>
+                <td className="px-5 py-3.5 text-right font-mono text-slate-900">
+                  {filteredReturns.reduce((acc, r) => acc + (r.items || []).reduce((sum, i) => sum + i.quantity, 0), 0)} Pcs
+                </td>
+                <td className="px-5 py-3.5 text-right font-mono text-rose-700">
+                  Rs. {filteredReturns.reduce((acc, r) => acc + r.grandTotal, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </td>
+                <td></td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>

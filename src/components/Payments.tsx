@@ -691,6 +691,15 @@ export const Payments: React.FC<PaymentsProps> = ({
                     </tr>
                   ))}
                 </tbody>
+                <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-slate-900">
+                  <tr>
+                    <td colSpan={6} className="p-4 text-right uppercase text-xs text-slate-500">Total ({receipts.length} Receipts):</td>
+                    <td className="p-4 text-right font-mono text-emerald-600">
+                      +{settings.currencySymbol} {receipts.reduce((acc, r) => acc + r.amount, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </td>
+                    <td></td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           )}
@@ -770,6 +779,15 @@ export const Payments: React.FC<PaymentsProps> = ({
                     </tr>
                   ))}
                 </tbody>
+                <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-slate-900">
+                  <tr>
+                    <td colSpan={6} className="p-4 text-right uppercase text-xs text-slate-500">Total ({payments.length} Payments):</td>
+                    <td className="p-4 text-right font-mono text-purple-700">
+                      -{settings.currencySymbol} {payments.reduce((acc, p) => acc + p.amount, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </td>
+                    <td></td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           )}
@@ -822,6 +840,15 @@ export const Payments: React.FC<PaymentsProps> = ({
                     </tr>
                   ))}
                 </tbody>
+                <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-slate-900">
+                  <tr>
+                    <td colSpan={5} className="p-4 text-right uppercase text-xs text-slate-500">Total ({expenses.length} Expenses):</td>
+                    <td className="p-4 text-right font-mono text-rose-600">
+                      -{settings.currencySymbol} {expenses.reduce((acc, exp) => acc + exp.amount, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </td>
+                    <td></td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           )}
@@ -1861,6 +1888,15 @@ export const Payments: React.FC<PaymentsProps> = ({
                         </tr>
                       ))}
                     </tbody>
+                    <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-slate-900">
+                      <tr>
+                        <td colSpan={6} className="p-4 text-right uppercase text-xs text-slate-500">Total ({receipts.length} Receipts):</td>
+                        <td className="p-4 text-right font-mono text-emerald-600">
+                          +{settings.currencySymbol} {receipts.reduce((acc, r) => acc + r.amount, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
                   </table>
                 ) : (
                   <p className="text-xs text-slate-500 italic p-3 bg-slate-50 rounded-xl border border-slate-100">

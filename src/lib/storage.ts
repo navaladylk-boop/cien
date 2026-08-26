@@ -3332,7 +3332,9 @@ export const StorageService = {
         remoteExpenses,
         remoteUsers,
         remotePdcs,
-        remoteJournals
+        remoteJournals,
+        remoteSaleReturns,
+        remotePurchaseReturns
       ] = await Promise.all([
         SupabaseSyncService.fetchAllRemoteCompanies(),
         SupabaseSyncService.fetchAllRemoteProducts(companyId),
@@ -3345,7 +3347,9 @@ export const StorageService = {
         SupabaseSyncService.fetchAllRemoteExpenses(companyId),
         SupabaseSyncService.fetchAllRemoteUsers(),
         SupabaseSyncService.fetchAllRemotePdcs(companyId),
-        SupabaseSyncService.fetchAllRemoteJournalEntries(companyId)
+        SupabaseSyncService.fetchAllRemoteJournalEntries(companyId),
+        SupabaseSyncService.fetchAllRemoteSaleReturns(companyId),
+        SupabaseSyncService.fetchAllRemotePurchaseReturns(companyId)
       ]);
 
       const pulledCounts: Record<string, number> = {};
@@ -3408,6 +3412,16 @@ export const StorageService = {
       if (remoteJournals !== null) {
         _inMemoryJournalEntries = remoteJournals;
         pulledCounts.journals = remoteJournals.length;
+      }
+
+      if (remoteSaleReturns !== null) {
+        _inMemorySaleReturns = remoteSaleReturns;
+        pulledCounts.saleReturns = remoteSaleReturns.length;
+      }
+
+      if (remotePurchaseReturns !== null) {
+        _inMemoryPurchaseReturns = remotePurchaseReturns;
+        pulledCounts.purchaseReturns = remotePurchaseReturns.length;
       }
 
       // Automatically align in-memory product current stock with Opening + In - Out

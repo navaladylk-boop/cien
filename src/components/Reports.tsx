@@ -762,6 +762,14 @@ export const Reports: React.FC<ReportsProps> = ({
                     </tr>
                   ))}
                 </tbody>
+                <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-slate-900">
+                  <tr>
+                    <td colSpan={4} className="p-3 text-right uppercase text-xs text-slate-500">Total ({filteredSales.length} Sales):</td>
+                    <td className="p-3 text-right font-mono text-slate-900">
+                      {settings.currencySymbol} {filteredSales.reduce((acc, s) => acc + s.grandTotal, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>
@@ -813,6 +821,14 @@ export const Reports: React.FC<ReportsProps> = ({
                     </tr>
                   ))}
                 </tbody>
+                <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-slate-900">
+                  <tr>
+                    <td colSpan={4} className="p-3 text-right uppercase text-xs text-slate-500">Total ({filteredPurchases.length} Purchases):</td>
+                    <td className="p-3 text-right font-mono text-slate-900">
+                      {settings.currencySymbol} {filteredPurchases.reduce((acc, p) => acc + p.grandTotal, 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>
