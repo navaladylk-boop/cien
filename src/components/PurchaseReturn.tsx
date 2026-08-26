@@ -34,7 +34,7 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
   // Form State
   const [selectedSupplierId, setSelectedSupplierId] = useState('');
   const [selectedPurchaseId, setSelectedPurchaseId] = useState('');
-  const [returnType, setReturnType] = useState<'CREDIT' | 'CASH'>('CREDIT');
+  const [returnType, setReturnType] = useState<'CREDIT' | 'CASH'>('CASH');
   const [returnDate, setReturnDate] = useState(new Date().toISOString().split('T')[0]);
   const [reason, setReason] = useState('Damaged / Defective Stock Returned to Supplier');
   const [notes, setNotes] = useState('');
@@ -178,7 +178,7 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
   const resetForm = () => {
     setSelectedSupplierId('');
     setSelectedPurchaseId('');
-    setReturnType('CREDIT');
+    setReturnType('CASH');
     setReturnDate(new Date().toISOString().split('T')[0]);
     setReason('Damaged / Defective Stock Returned to Supplier');
     setNotes('');

@@ -37,7 +37,7 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
   // Form State
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
-  const [returnType, setReturnType] = useState<'CREDIT' | 'CASH'>('CREDIT');
+  const [returnType, setReturnType] = useState<'CREDIT' | 'CASH'>('CASH');
   const [returnDate, setReturnDate] = useState(new Date().toISOString().split('T')[0]);
   const [reason, setReason] = useState('Defective / Returned Item');
   const [notes, setNotes] = useState('');
@@ -181,7 +181,7 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
   const resetForm = () => {
     setSelectedCustomerId('');
     setSelectedInvoiceId('');
-    setReturnType('CREDIT');
+    setReturnType('CASH');
     setReturnDate(new Date().toISOString().split('T')[0]);
     setReason('Defective / Returned Item');
     setNotes('');
