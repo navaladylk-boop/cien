@@ -408,7 +408,7 @@ export const Reports: React.FC<ReportsProps> = ({
       title = 'Sales Summary Report';
       const validReturns = saleReturns.filter((sr) => isDateInRange(sr.date));
       const totalRev = filteredSales.reduce((sum, s) => sum + s.grandTotal, 0) - validReturns.reduce((sum, sr) => sum + sr.grandTotal, 0);
-      const totalPaid = filteredSales.reduce((sum, s) => sum + s.paidAmount, 0) - validReturns.reduce((sum, sr) => sum + sr.paidAmount, 0);
+      const totalPaid = filteredSales.reduce((sum, s) => sum + s.paidAmount, 0) - validReturns.reduce((sum, sr) => sum + (sr.refundedAmount || 0), 0);
       const totalDue = filteredSales.reduce((sum, s) => sum + s.dueAmount, 0);
       lines = [
         `📊 *${settings.companyName || 'Company Name'}*`,
@@ -735,7 +735,7 @@ export const Reports: React.FC<ReportsProps> = ({
                 onClick={() => {
                   const exportData = [
                     ...filteredSales.map((s) => [s.invoiceNumber, s.customerName, s.date, `Sale (${s.type})`, s.grandTotal, s.paidAmount, s.dueAmount]),
-                    ...saleReturns.filter((sr) => isDateInRange(sr.date)).map((sr) => [sr.returnNumber, sr.customerName, sr.date, `Return (${sr.type})`, -sr.grandTotal, -sr.paidAmount, 0])
+                    ...saleReturns.filter((sr) => isDateInRange(sr.date)).map((sr) => [sr.returnNumber, sr.customerName, sr.date, `Return (${sr.type})`, -sr.grandTotal, -(sr.refundedAmount || 0), 0])
                   ];
                   handleExportCSV(
                     'SalesReport',

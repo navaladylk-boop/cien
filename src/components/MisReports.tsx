@@ -397,7 +397,7 @@ export const MisReports: React.FC<MisReportsProps> = ({
                         <td className="p-2.5 text-rose-700 font-bold">Return ({sr.type})</td>
                         <td className="p-2.5 font-medium text-rose-900">{sr.customerName}</td>
                         <td className="p-2.5 text-right font-bold text-rose-700">-{sr.grandTotal.toFixed(2)}</td>
-                        <td className="p-2.5 text-right text-rose-600">-{sr.paidAmount.toFixed(2)}</td>
+                        <td className="p-2.5 text-right text-rose-600">-{(sr.refundedAmount || 0).toFixed(2)}</td>
                         <td className="p-2.5 text-right text-slate-500">-</td>
                       </tr>
                     ))}
@@ -421,7 +421,7 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       <td className="p-2.5 text-right font-mono text-emerald-600">
                         {(
                           filteredSales.reduce((a, s) => a + s.paidAmount, 0) - 
-                          StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).reduce((a, sr) => a + sr.paidAmount, 0)
+                          StorageService.getSaleReturns(company?.id).filter(sr => isDateInRange(sr.date)).reduce((a, sr) => a + (sr.refundedAmount || 0), 0)
                         ).toFixed(2)}
                       </td>
                       <td className="p-2.5 text-right font-mono text-rose-600">
@@ -644,9 +644,9 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       <tr key={c.id} className="hover:bg-slate-50">
                         <td className="p-2.5 font-bold text-slate-900">{c.name}</td>
                         <td className="p-2.5 text-slate-500">{c.phone || '-'}</td>
-                        <td className="p-2.5 text-right font-mono">{c.openingBalance.toFixed(2)}</td>
+                        <td className="p-2.5 text-right font-mono">{(c.openingBalance || 0).toFixed(2)}</td>
                         <td className="p-2.5 text-right font-mono font-bold text-rose-600">
-                          {c.outstandingBalance.toFixed(2)}
+                          {(c.outstandingBalance || 0).toFixed(2)}
                         </td>
                       </tr>
                     ))}
@@ -654,8 +654,8 @@ export const MisReports: React.FC<MisReportsProps> = ({
                   <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
                     <tr>
                       <td colSpan={2} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({customers.length} Customers):</td>
-                      <td className="p-2.5 text-right font-mono">{customers.reduce((acc, c) => acc + c.openingBalance, 0).toFixed(2)}</td>
-                      <td className="p-2.5 text-right font-mono text-rose-600">{customers.reduce((acc, c) => acc + c.outstandingBalance, 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono">{customers.reduce((acc, c) => acc + (c.openingBalance || 0), 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono text-rose-600">{customers.reduce((acc, c) => acc + (c.outstandingBalance || 0), 0).toFixed(2)}</td>
                     </tr>
                   </tfoot>
                 </table>
@@ -681,9 +681,9 @@ export const MisReports: React.FC<MisReportsProps> = ({
                       <tr key={s.id} className="hover:bg-slate-50">
                         <td className="p-2.5 font-bold text-slate-900">{s.name}</td>
                         <td className="p-2.5 text-slate-500">{s.phone || '-'}</td>
-                        <td className="p-2.5 text-right font-mono">{s.openingBalance.toFixed(2)}</td>
+                        <td className="p-2.5 text-right font-mono">{(s.openingBalance || 0).toFixed(2)}</td>
                         <td className="p-2.5 text-right font-mono font-bold text-amber-700">
-                          {s.payableBalance.toFixed(2)}
+                          {(s.payableBalance || 0).toFixed(2)}
                         </td>
                       </tr>
                     ))}
@@ -691,8 +691,8 @@ export const MisReports: React.FC<MisReportsProps> = ({
                   <tfoot className="bg-slate-100 font-bold border-t-2 border-slate-200 text-slate-900">
                     <tr>
                       <td colSpan={2} className="p-2.5 text-right uppercase text-xs text-slate-500">Total ({suppliers.length} Suppliers):</td>
-                      <td className="p-2.5 text-right font-mono">{suppliers.reduce((acc, s) => acc + s.openingBalance, 0).toFixed(2)}</td>
-                      <td className="p-2.5 text-right font-mono text-amber-700">{suppliers.reduce((acc, s) => acc + s.payableBalance, 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono">{suppliers.reduce((acc, s) => acc + (s.openingBalance || 0), 0).toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-mono text-amber-700">{suppliers.reduce((acc, s) => acc + (s.payableBalance || 0), 0).toFixed(2)}</td>
                     </tr>
                   </tfoot>
                 </table>

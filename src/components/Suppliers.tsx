@@ -92,7 +92,7 @@ export const Suppliers: React.FC<SuppliersProps> = ({
       address: supp.address || '',
       city: supp.city || 'Colombo',
       accountGroup: supp.accountGroup || 'Sundry Creditors',
-      openingBalance: supp.openingBalance.toString()
+      openingBalance: (supp.openingBalance || 0).toString()
     });
     setIsModalOpen(true);
   };
@@ -545,7 +545,7 @@ export const Suppliers: React.FC<SuppliersProps> = ({
                   Opening Balance
                 </span>
                 <span className="text-sm font-mono font-bold text-slate-800">
-                  {settings.currencySymbol} {selectedLedgerSupplier.openingBalance.toFixed(2)}
+                  {settings.currencySymbol} {(selectedLedgerSupplier.openingBalance || 0).toFixed(2)}
                 </span>
               </div>
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
@@ -565,7 +565,7 @@ export const Suppliers: React.FC<SuppliersProps> = ({
                   Current Payable
                 </span>
                 <span className="text-sm font-mono font-black text-rose-700">
-                  {settings.currencySymbol} {selectedLedgerSupplier.payableBalance.toFixed(2)}
+                  {settings.currencySymbol} {(selectedLedgerSupplier.payableBalance || 0).toFixed(2)}
                 </span>
               </div>
             </div>

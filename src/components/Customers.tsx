@@ -89,7 +89,7 @@ export const Customers: React.FC<CustomersProps> = ({
       address: cust.address || '',
       city: cust.city || 'Colombo',
       accountGroup: cust.accountGroup || 'Sundry Debtors',
-      openingBalance: cust.openingBalance.toString()
+      openingBalance: (cust.openingBalance || 0).toString()
     });
     setIsModalOpen(true);
   };
@@ -251,7 +251,7 @@ export const Customers: React.FC<CustomersProps> = ({
                         cust.outstandingBalance > 0 ? 'text-amber-600' : 'text-emerald-600'
                       }`}
                     >
-                      {settings.currencySymbol} {cust.outstandingBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        {settings.currencySymbol} {(cust.outstandingBalance || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                     </span>
                   </div>
                 </div>
@@ -572,7 +572,7 @@ export const Customers: React.FC<CustomersProps> = ({
             <div className="my-4 bg-slate-50 p-3 rounded-xl flex items-center justify-between text-xs font-bold border border-slate-200">
               <span>Current Outstanding:</span>
               <span className="text-base font-mono text-amber-600 font-extrabold">
-                {settings.currencySymbol} {selectedLedgerCustomer.outstandingBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                {settings.currencySymbol} {(selectedLedgerCustomer.outstandingBalance || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
               </span>
             </div>
 
