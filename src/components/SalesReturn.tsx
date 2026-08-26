@@ -36,6 +36,7 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
   
   // Form State
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [customCustomerName, setCustomCustomerName] = useState('Walk-in Cash Customer');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
   const [returnType, setReturnType] = useState<'CREDIT' | 'CASH'>('CASH');
   const [returnDate, setReturnDate] = useState(new Date().toISOString().split('T')[0]);
@@ -80,8 +81,16 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
     setInvoices(StorageService.getSales(currentCompanyId));
   };
 
-  const handleCustomerSelect = (customerId: string, _name?: string) => {
+  const handleCustomerSelect = (customerId: string, name?: string) => {
     setSelectedCustomerId(customerId);
+    if (name) {
+      setCustomCustomerName(name);
+    } else if (!customerId) {
+      setCustomCustomerName('Walk-in Cash Customer');
+    } else {
+      const cust = customers.find((c) => c.id === customerId);
+      if (cust) setCustomCustomerName(cust.name);
+    }
     setTimeout(() => {
       const firstProductInput = document.getElementById('sale-return-product-search-0') as HTMLInputElement | null;
       if (firstProductInput) {
@@ -95,7 +104,13 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
     if (!invId) return;
     const inv = invoices.find((i) => i.id === invId);
     if (inv) {
-      if (inv.customerId) setSelectedCustomerId(inv.customerId);
+      if (inv.customerId) {
+        setSelectedCustomerId(inv.customerId);
+        setCustomCustomerName(inv.customerName || 'Walk-in Cash Customer');
+      } else {
+        setSelectedCustomerId('');
+        setCustomCustomerName(inv.customerName || 'Walk-in Cash Customer');
+      }
       const mappedItems = (inv.items || []).map((item) => ({
         productId: item.productId,
         productCode: item.productCode || '',
@@ -180,6 +195,7 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
 
   const resetForm = () => {
     setSelectedCustomerId('');
+    setCustomCustomerName('Walk-in Cash Customer');
     setSelectedInvoiceId('');
     setReturnType('CASH');
     setReturnDate(new Date().toISOString().split('T')[0]);
@@ -192,8 +208,8 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCustomerId) {
-      setFeedback({ type: 'error', message: 'Please select a customer.' });
+    if (!customCustomerName) {
+      setFeedback({ type: 'error', message: 'Please specify customer name.' });
       return;
     }
 
@@ -206,7 +222,6 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
     setIsSaving(true);
     setFeedback(null);
 
-    const cust = customers.find((c) => c.id === selectedCustomerId);
     const inv = invoices.find((i) => i.id === selectedInvoiceId);
 
     const subtotal = validItems.reduce((sum, i) => sum + i.total, 0);
@@ -216,8 +231,8 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
       {
         companyId: currentCompanyId,
         date: returnDate,
-        customerId: selectedCustomerId,
-        customerName: cust ? cust.name : 'Unknown Customer',
+        customerId: selectedCustomerId || undefined,
+        customerName: customCustomerName,
         invoiceId: selectedInvoiceId || undefined,
         invoiceNumber: inv ? inv.invoiceNumber : undefined,
         reason,
@@ -413,12 +428,12 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
                   <SearchableCustomerSelect
                     customers={customers}
                     selectedCustomerId={selectedCustomerId}
+                    customCustomerName={customCustomerName}
                     onSelect={handleCustomerSelect}
                     currencySymbol={currencySymbol}
-                    allowWalkIn={false}
+                    allowWalkIn={true}
                     label="Customer *"
                     placeholder="Search customer name, code, phone..."
-                    required
                   />
                 </div>
 
