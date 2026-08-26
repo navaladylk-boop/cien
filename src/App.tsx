@@ -490,6 +490,31 @@ function AppMain() {
     }
   };
 
+  const handleDeleteProductsBulk = async (ids: string[]) => {
+    const isAdmin = Boolean(
+      session?.user?.isAdmin ||
+      session?.user?.roleName?.toLowerCase().includes('admin') ||
+      session?.user?.roleId === 'role-admin' ||
+      session?.user?.username?.toLowerCase() === 'admin'
+    );
+
+    if (!isAdmin) {
+      addToast('error', 'Access Denied: Only Administrator users can perform bulk deletion of inventory items.');
+      return;
+    }
+
+    const res = await StorageService.deleteProductsBulkAsync(ids);
+    refreshAllStates(activeCompId);
+    if (res.success) {
+      if (session) {
+        AuthService.recordAuditLog('PRODUCT_DELETED', 'products', `Bulk deleted ${ids.length} products`, ids.join(','));
+      }
+      addToast('info', res.message || `Deleted ${ids.length} products successfully.`);
+    } else {
+      addToast('error', res.error || 'Failed to bulk delete products.');
+    }
+  };
+
   // Handlers for Invoices & Purchases
   const handleCreateSaleInvoice = async (
     invoiceData: Omit<SaleInvoice, 'id' | 'invoiceNumber' | 'createdAt'>
@@ -818,6 +843,7 @@ function AppMain() {
               settings={settings}
               onSaveProduct={handleSaveProduct}
               onDeleteProduct={handleDeleteProduct}
+              onDeleteProductsBulk={handleDeleteProductsBulk}
               onRecalculateStock={() => {
                 const res = StorageService.recalculateProductStock(activeCompId);
                 refreshAllStates(activeCompId);

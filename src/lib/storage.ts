@@ -822,6 +822,43 @@ export const StorageService = {
     return { success: true, message: 'Product deleted from database.' };
   },
 
+  async deleteProductsBulkAsync(ids: string[]): Promise<{ success: boolean; count?: number; message?: string; error?: string }> {
+    if (!ids || ids.length === 0) {
+      return { success: true, count: 0, message: 'No items selected.' };
+    }
+
+    if (!checkOnline()) {
+      return {
+        success: false,
+        error: 'Internet connection is required to delete products.'
+      };
+    }
+
+    const creds = getActiveSupabaseCredentials();
+    if (!creds.url || !creds.key) {
+      return {
+        success: false,
+        error: 'Supabase database is not configured.'
+      };
+    }
+
+    const res = await SupabaseSyncService.deleteProductsBulk(ids);
+    if (!res.success) {
+      return {
+        success: false,
+        error: res.error || 'Failed to bulk delete products from Supabase database.'
+      };
+    }
+
+    const idSet = new Set(ids);
+    _inMemoryProducts = _inMemoryProducts.filter((p) => !idSet.has(p.id));
+    return {
+      success: true,
+      count: ids.length,
+      message: `Successfully deleted ${ids.length} product(s).`
+    };
+  },
+
   recalculateProductStock(companyId?: string): { updatedCount: number } {
     const prods = this.getProducts(companyId);
     const purchases = this.getPurchases(companyId);

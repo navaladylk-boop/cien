@@ -30,6 +30,7 @@ interface ProductsProps {
   settings: AppSettings;
   onSaveProduct: (product: Partial<Product>) => void;
   onDeleteProduct: (id: string) => void;
+  onDeleteProductsBulk?: (ids: string[]) => Promise<void>;
   onRecalculateStock?: () => void;
   validateProduct: (code: string, name: string, excludeId?: string) => string | null;
   showToast: (type: 'success' | 'error' | 'info', message: string) => void;
@@ -43,6 +44,7 @@ export const Products: React.FC<ProductsProps> = ({
   settings,
   onSaveProduct,
   onDeleteProduct,
+  onDeleteProductsBulk,
   onRecalculateStock,
   validateProduct,
   showToast,
@@ -58,9 +60,21 @@ export const Products: React.FC<ProductsProps> = ({
   const [editingProduct, setEditingProduct] = useState<Partial<Product> | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
+  // Bulk deletion state & Admin check
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [isBulkDeleteConfirmOpen, setIsBulkDeleteConfirmOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+
+  const isAdmin = Boolean(
+    session?.user?.isAdmin ||
+    session?.user?.roleName?.toLowerCase().includes('admin') ||
+    session?.user?.roleId === 'role-admin' ||
+    session?.user?.username?.toLowerCase() === 'admin'
+  );
+
   const canAdd = checkPermission(session?.effectivePermissions, 'products', 'add');
   const canEdit = checkPermission(session?.effectivePermissions, 'products', 'edit');
-  const canDelete = checkPermission(session?.effectivePermissions, 'products', 'delete');
+  const canDelete = checkPermission(session?.effectivePermissions, 'products', 'delete') || isAdmin;
   const canAdjustStock = checkPermission(session?.effectivePermissions, 'products', 'edit');
 
   // Form state
@@ -188,6 +202,57 @@ export const Products: React.FC<ProductsProps> = ({
 
     return matchesQuery && matchesCategory && matchesStock;
   });
+
+  const visibleIds = filteredProducts.map((p) => p.id);
+  const isAllFilteredSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selectedProductIds.includes(id));
+  const isSomeFilteredSelected =
+    visibleIds.some((id) => selectedProductIds.includes(id)) && !isAllFilteredSelected;
+
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      setSelectedProductIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
+    } else {
+      const visibleSet = new Set(visibleIds);
+      setSelectedProductIds((prev) => prev.filter((id) => !visibleSet.has(id)));
+    }
+  };
+
+  const handleSelectOne = (id: string, checked: boolean) => {
+    if (checked) {
+      setSelectedProductIds((prev) => [...prev, id]);
+    } else {
+      setSelectedProductIds((prev) => prev.filter((item) => item !== id));
+    }
+  };
+
+  const handleConfirmBulkDelete = async () => {
+    if (!isAdmin) {
+      showToast('error', 'Access Denied: Only Administrators can bulk delete inventory items.');
+      setIsBulkDeleteConfirmOpen(false);
+      return;
+    }
+
+    if (selectedProductIds.length === 0) return;
+
+    setIsBulkDeleting(true);
+    try {
+      if (onDeleteProductsBulk) {
+        await onDeleteProductsBulk(selectedProductIds);
+      } else {
+        for (const id of selectedProductIds) {
+          await onDeleteProduct(id);
+        }
+      }
+      showToast('info', `Deleted ${selectedProductIds.length} item(s) successfully.`);
+      setSelectedProductIds([]);
+      setIsBulkDeleteConfirmOpen(false);
+    } catch (err: any) {
+      showToast('error', err?.message || 'Failed to bulk delete products.');
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
 
   const lowStockCount = products.filter(
     (p) => p.currentStock <= p.reorderLevel && p.currentStock > 0
@@ -364,6 +429,42 @@ export const Products: React.FC<ProductsProps> = ({
         </div>
       </div>
 
+      {/* Admin Bulk Selection Action Bar */}
+      {isAdmin && selectedProductIds.length > 0 && (
+        <div className="bg-rose-50 border border-rose-200 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <span className="bg-rose-600 text-white font-mono font-black text-xs px-2.5 py-1 rounded-lg">
+              {selectedProductIds.length}
+            </span>
+            <div>
+              <span className="text-xs font-bold text-rose-950 block">
+                {selectedProductIds.length === 1 ? 'Product item selected' : 'Product items selected'}
+              </span>
+              <span className="text-[10px] text-rose-700 font-medium">Admin privilege activated for bulk deletion</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedProductIds([])}
+              className="px-3.5 py-1.5 text-xs font-bold text-slate-600 hover:text-slate-800 bg-white border border-slate-200 rounded-xl hover:bg-slate-100 transition-all cursor-pointer shadow-2xs"
+            >
+              Clear Selection
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsBulkDeleteConfirmOpen(true)}
+              className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold px-4 py-1.5 rounded-xl text-xs shadow-xs transition-all cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Bulk Delete ({selectedProductIds.length})</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Products Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
         {filteredProducts.length === 0 ? (
@@ -375,6 +476,20 @@ export const Products: React.FC<ProductsProps> = ({
             <table className="w-full text-left text-sm border-collapse">
               <thead>
                 <tr className="bg-slate-50 text-slate-500 uppercase font-bold text-xs border-b border-slate-200 tracking-wider">
+                  {isAdmin && (
+                    <th className="p-4 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={isAllFilteredSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = isSomeFilteredSelected;
+                        }}
+                        onChange={(e) => handleSelectAll(e.target.checked)}
+                        className="w-4 h-4 text-rose-600 rounded border-slate-300 focus:ring-rose-500 cursor-pointer"
+                        title="Select/deselect all visible items"
+                      />
+                    </th>
+                  )}
                   <th className="p-4">Code</th>
                   <th className="p-4">Product Name</th>
                   <th className="p-4">Category</th>
@@ -391,6 +506,7 @@ export const Products: React.FC<ProductsProps> = ({
                   const isOut = prod.currentStock <= 0;
                   const unitLabel = prod.unit || prod.primaryUnit || 'Nos';
                   const hasSec = Boolean(prod.secondaryUnit && prod.conversionFactor && prod.conversionFactor > 1);
+                  const isSelected = selectedProductIds.includes(prod.id);
 
                   let stockDisplay = `${prod.currentStock} ${unitLabel}`;
                   if (hasSec && prod.secondaryUnit && prod.conversionFactor) {
@@ -399,7 +515,22 @@ export const Products: React.FC<ProductsProps> = ({
                   }
 
                   return (
-                    <tr key={`${prod.id}-${idx}`} className="hover:bg-slate-50/80 transition-colors">
+                    <tr
+                      key={`${prod.id}-${idx}`}
+                      className={`transition-colors ${
+                        isSelected ? 'bg-rose-50/60' : 'hover:bg-slate-50/80'
+                      }`}
+                    >
+                      {isAdmin && (
+                        <td className="p-4 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => handleSelectOne(prod.id, e.target.checked)}
+                            className="w-4 h-4 text-rose-600 rounded border-slate-300 focus:ring-rose-500 cursor-pointer"
+                          />
+                        </td>
+                      )}
                       <td className="p-4 font-mono font-bold text-slate-900">{prod.code}</td>
                       <td className="p-4">
                         <div className="font-bold text-slate-900">{prod.name}</div>
@@ -870,6 +1001,55 @@ export const Products: React.FC<ProductsProps> = ({
         onClose={() => setIsUnitManagerOpen(false)}
         showToast={showToast}
       />
+
+      {/* Bulk Delete Confirmation Modal (Admin Only) */}
+      {isBulkDeleteConfirmOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 animate-in fade-in zoom-in-95">
+            <div className="flex items-center gap-3 text-rose-600 mb-4">
+              <div className="p-3 bg-rose-100 rounded-2xl">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-lg text-slate-900">Confirm Bulk Delete</h3>
+                <p className="text-xs text-slate-500 font-semibold">Administrator Privileges Verified</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-slate-600 mb-4">
+              Are you sure you want to permanently delete{' '}
+              <strong className="text-slate-900 font-mono font-bold text-base">
+                {selectedProductIds.length}
+              </strong>{' '}
+              selected product item(s) from your inventory catalog?
+            </p>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 mb-6 font-medium">
+              ⚠️ Warning: This action will remove the selected product catalog entries. Future purchase/sale listings will no longer show these items. Historical invoice records will retain their text names.
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsBulkDeleteConfirmOpen(false)}
+                disabled={isBulkDeleting}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:text-slate-800 bg-slate-100 rounded-xl cursor-pointer hover:bg-slate-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBulkDelete}
+                disabled={isBulkDeleting}
+                className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold px-4 py-2 rounded-xl text-xs shadow-xs transition-all cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{isBulkDeleting ? 'Deleting...' : `Confirm Bulk Delete (${selectedProductIds.length})`}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -614,6 +614,29 @@ export const SupabaseSyncService = {
     }
   },
 
+  async deleteProductsBulk(productIds: string[]): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+    if (!productIds || productIds.length === 0) return { success: true };
+    try {
+      try {
+        await client.from('busy_ufo_sale_items').update({ product_id: null }).in('product_id', productIds);
+      } catch {}
+      try {
+        await client.from('busy_ufo_purchase_items').update({ product_id: null }).in('product_id', productIds);
+      } catch {}
+      const { error } = await client.from('busy_ufo_products').delete().in('id', productIds);
+      if (error) {
+        console.warn('Supabase bulk product delete error:', error);
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (e: any) {
+      console.warn('Supabase bulk product delete exception:', e);
+      return { success: false, error: e?.message };
+    }
+  },
+
   // --- CUSTOMERS ---
   async syncCustomer(customer: Customer): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
