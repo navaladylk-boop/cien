@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { StorageService } from '../lib/storage';
 import { PurchaseReturn, PurchaseReturnItem, Supplier, Product, PurchaseInvoice } from '../types';
+import { SearchableSupplierSelect, SearchableProductSelect } from './SearchableSelect';
+import { handleEnterKeyNavigation } from '../lib/keyboardNav';
 
 interface PurchaseReturnProps {
   currentCompanyId: string;
@@ -38,6 +40,16 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
   const [notes, setNotes] = useState('');
   const [discountAmount, setDiscountAmount] = useState<number>(0);
 
+  const createEmptyItem = () => ({
+    productId: '',
+    productCode: '',
+    productName: '',
+    unit: 'Pcs',
+    quantity: 1,
+    unitCost: 0,
+    total: 0
+  });
+
   const [items, setItems] = useState<Array<{
     productId: string;
     productCode: string;
@@ -46,10 +58,13 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
     quantity: number;
     unitCost: number;
     total: number;
-  }>>([]);
+  }>>([createEmptyItem()]);
 
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const settings = StorageService.getSettings();
+  const currencySymbol = settings?.currencySymbol || 'Rs.';
 
   useEffect(() => {
     loadData();
@@ -60,6 +75,16 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
     setSuppliers(StorageService.getSuppliers(currentCompanyId));
     setProducts(StorageService.getProducts(currentCompanyId));
     setPurchases(StorageService.getPurchases(currentCompanyId));
+  };
+
+  const handleSupplierSelect = (supplierId: string, _name?: string) => {
+    setSelectedSupplierId(supplierId);
+    setTimeout(() => {
+      const firstProductInput = document.getElementById('purchase-return-product-search-0') as HTMLInputElement | null;
+      if (firstProductInput) {
+        firstProductInput.focus();
+      }
+    }, 60);
   };
 
   const handlePurchaseSelect = (purId: string) => {
@@ -77,44 +102,62 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
         unitCost: item.unitCost || 0,
         total: item.total || 0
       }));
-      setItems(mappedItems);
+      setItems(mappedItems.length > 0 ? mappedItems : [createEmptyItem()]);
     }
   };
 
   const handleAddItemRow = () => {
-    if (products.length === 0) return;
-    const firstP = products[0];
-    setItems((prev) => [
-      ...prev,
-      {
-        productId: firstP.id,
-        productCode: firstP.code || '',
-        productName: firstP.name,
-        unit: firstP.unit || 'Pcs',
-        quantity: 1,
-        unitCost: firstP.costPrice || 0,
-        total: firstP.costPrice || 0
+    setItems((prev) => [...prev, createEmptyItem()]);
+    const newIdx = items.length;
+    setTimeout(() => {
+      const prodInput = document.getElementById(`purchase-return-product-search-${newIdx}`) as HTMLInputElement | null;
+      if (prodInput) {
+        prodInput.focus();
       }
-    ]);
+    }, 60);
   };
 
-  const handleItemChange = (index: number, field: string, value: any) => {
+  const handleProductSelect = (index: number, productId: string) => {
+    const prod = products.find((p) => p.id === productId);
+    setItems((prev) => {
+      const updated = [...prev];
+      if (prod) {
+        const qty = updated[index]?.quantity || 1;
+        const cost = prod.costPrice || 0;
+        updated[index] = {
+          productId: prod.id,
+          productCode: prod.code || '',
+          productName: prod.name,
+          unit: prod.unit || 'Pcs',
+          quantity: qty,
+          unitCost: cost,
+          total: Number((qty * cost).toFixed(2))
+        };
+      } else {
+        updated[index] = createEmptyItem();
+      }
+      return updated;
+    });
+
+    if (prod) {
+      setTimeout(() => {
+        const qtyInput = document.getElementById(`purchase-return-qty-input-${index}`) as HTMLInputElement | null;
+        if (qtyInput) {
+          qtyInput.focus();
+          qtyInput.select();
+        }
+      }, 60);
+    }
+  };
+
+  const handleItemChange = (index: number, field: 'quantity' | 'unitCost', value: number) => {
     setItems((prev) => {
       const updated = [...prev];
       const item = { ...updated[index] };
-      if (field === 'productId') {
-        const p = products.find((prod) => prod.id === value);
-        if (p) {
-          item.productId = p.id;
-          item.productCode = p.code || '';
-          item.productName = p.name;
-          item.unit = p.unit || 'Pcs';
-          item.unitCost = p.costPrice || 0;
-        }
-      } else if (field === 'quantity') {
-        item.quantity = Math.max(1, Number(value) || 0);
+      if (field === 'quantity') {
+        item.quantity = Math.max(1, value);
       } else if (field === 'unitCost') {
-        item.unitCost = Math.max(0, Number(value) || 0);
+        item.unitCost = Math.max(0, value);
       }
       item.total = Number((item.quantity * item.unitCost).toFixed(2));
       updated[index] = item;
@@ -123,7 +166,10 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
   };
 
   const handleRemoveItemRow = (index: number) => {
-    setItems((prev) => prev.filter((_, i) => i !== index));
+    setItems((prev) => {
+      const filtered = prev.filter((_, i) => i !== index);
+      return filtered.length > 0 ? filtered : [createEmptyItem()];
+    });
   };
 
   const calculateSubtotal = () => items.reduce((sum, i) => sum + i.total, 0);
@@ -137,7 +183,7 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
     setReason('Damaged / Defective Stock Returned to Supplier');
     setNotes('');
     setDiscountAmount(0);
-    setItems([]);
+    setItems([createEmptyItem()]);
     setFeedback(null);
   };
 
@@ -147,8 +193,10 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
       setFeedback({ type: 'error', message: 'Please select a supplier.' });
       return;
     }
-    if (items.length === 0) {
-      setFeedback({ type: 'error', message: 'Please add at least one item to return.' });
+
+    const validItems = items.filter((i) => i.productId && i.quantity > 0);
+    if (validItems.length === 0) {
+      setFeedback({ type: 'error', message: 'Please select at least one valid product item to return.' });
       return;
     }
 
@@ -158,8 +206,8 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
     const supp = suppliers.find((s) => s.id === selectedSupplierId);
     const pur = purchases.find((p) => p.id === selectedPurchaseId);
 
-    const subtotal = calculateSubtotal();
-    const grandTotal = calculateGrandTotal();
+    const subtotal = validItems.reduce((sum, i) => sum + i.total, 0);
+    const grandTotal = Math.max(0, subtotal - discountAmount);
 
     const result = await StorageService.createPurchaseReturnAsync(
       {
@@ -171,7 +219,7 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
         purchaseNumber: pur ? pur.purchaseNumber : undefined,
         reason,
         type: returnType,
-        items,
+        items: validItems,
         subtotal,
         discount: discountAmount,
         discountAmount,
@@ -359,20 +407,15 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
               {/* Top Row fields */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Supplier *</label>
-                  <select
-                    value={selectedSupplierId}
-                    onChange={(e) => setSelectedSupplierId(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                  <SearchableSupplierSelect
+                    suppliers={suppliers}
+                    selectedSupplierId={selectedSupplierId}
+                    onSelect={handleSupplierSelect}
+                    currencySymbol={currencySymbol}
+                    label="Supplier *"
+                    placeholder="Search supplier name, code, phone..."
                     required
-                  >
-                    <option value="">Select Supplier...</option>
-                    {suppliers.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name} (Payable: Rs. {s.payableBalance})
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
 
                 <div>
@@ -380,12 +423,12 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
                   <select
                     value={selectedPurchaseId}
                     onChange={(e) => handlePurchaseSelect(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                    className="w-full min-h-[42px] px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                   >
                     <option value="">Manual / No Bill link</option>
                     {purchases.map((pur) => (
                       <option key={pur.id} value={pur.id}>
-                        {pur.purchaseNumber} - {pur.supplierName} (Rs. {pur.grandTotal})
+                        {pur.purchaseNumber} - {pur.supplierName} ({currencySymbol} {pur.grandTotal})
                       </option>
                     ))}
                   </select>
@@ -397,7 +440,7 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
                     type="date"
                     value={returnDate}
                     onChange={(e) => setReturnDate(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                    className="w-full min-h-[42px] px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                   />
                 </div>
               </div>
@@ -438,7 +481,7 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
                     value={reason}
                     onChange={(e) => setReason(e.target.value)}
                     placeholder="e.g. Damaged goods, expired stock, over-supplied"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                    className="w-full min-h-[42px] px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                   />
                 </div>
               </div>
@@ -450,83 +493,98 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
                   <button
                     type="button"
                     onClick={handleAddItemRow}
-                    className="text-xs font-semibold text-amber-600 hover:text-amber-700 inline-flex items-center gap-1"
+                    className="text-xs font-semibold text-amber-600 hover:text-amber-700 inline-flex items-center gap-1 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Add Item Row
                   </button>
                 </div>
 
-                <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <div className="border border-slate-200 rounded-lg overflow-visible">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-100 border-b border-slate-200 text-slate-600 font-semibold">
                       <tr>
-                        <th className="px-3 py-2">Product</th>
-                        <th className="px-3 py-2 w-24">Unit</th>
+                        <th className="px-3 py-2">Product Item (Search Name / Code)</th>
+                        <th className="px-3 py-2 w-20">Unit</th>
                         <th className="px-3 py-2 w-24 text-right">Qty</th>
-                        <th className="px-3 py-2 w-32 text-right">Unit Cost</th>
+                        <th className="px-3 py-2 w-32 text-right">Unit Cost ({currencySymbol})</th>
                         <th className="px-3 py-2 w-32 text-right">Total</th>
                         <th className="px-2 py-2 w-10 text-center"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
-                      {items.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="px-3 py-6 text-center text-slate-400">
-                            No items added. Click "Add Item Row" or select a purchase bill above.
+                      {items.map((item, idx) => (
+                        <tr key={idx} className="bg-white hover:bg-slate-50/50">
+                          <td className="px-3 py-2">
+                            <SearchableProductSelect
+                              id={`purchase-return-product-search-${idx}`}
+                              products={products}
+                              selectedProductId={item.productId}
+                              onSelect={(prodId) => handleProductSelect(idx, prodId)}
+                              currencySymbol={currencySymbol}
+                              priceType="COST"
+                              placeholder="Type product name, code, barcode to search..."
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-slate-500 font-medium">{item.unit || 'Pcs'}</td>
+                          <td className="px-3 py-2">
+                            <input
+                              id={`purchase-return-qty-input-${idx}`}
+                              type="number"
+                              min="1"
+                              value={item.quantity || ''}
+                              onChange={(e) => handleItemChange(idx, 'quantity', Number(e.target.value) || 0)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  if (idx === items.length - 1) {
+                                    handleAddItemRow();
+                                  } else {
+                                    const nextInput = document.getElementById(`purchase-return-product-search-${idx + 1}`) as HTMLInputElement | null;
+                                    if (nextInput) nextInput.focus();
+                                  }
+                                }
+                              }}
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs text-right font-mono font-bold focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={item.unitCost || ''}
+                              onChange={(e) => handleItemChange(idx, 'unitCost', Number(e.target.value) || 0)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  if (idx === items.length - 1) {
+                                    handleAddItemRow();
+                                  } else {
+                                    const nextInput = document.getElementById(`purchase-return-product-search-${idx + 1}`) as HTMLInputElement | null;
+                                    if (nextInput) nextInput.focus();
+                                  }
+                                }
+                              }}
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs text-right font-mono font-bold focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono font-semibold text-slate-800">
+                            {currencySymbol} {item.total.toFixed(2)}
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveItemRow(idx)}
+                              disabled={items.length === 1 && !item.productId}
+                              className="text-slate-400 hover:text-amber-600 p-1 rounded hover:bg-amber-50 disabled:opacity-30 cursor-pointer"
+                              title="Remove item"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
                           </td>
                         </tr>
-                      ) : (
-                        items.map((item, idx) => (
-                          <tr key={idx} className="bg-white">
-                            <td className="px-3 py-2">
-                              <select
-                                value={item.productId}
-                                onChange={(e) => handleItemChange(idx, 'productId', e.target.value)}
-                                className="w-full px-2 py-1 border border-slate-300 rounded text-xs focus:outline-none focus:border-amber-500"
-                              >
-                                {products.map((p) => (
-                                  <option key={p.id} value={p.id}>
-                                    {p.name} ({p.code})
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="px-3 py-2 text-slate-500">{item.unit}</td>
-                            <td className="px-3 py-2">
-                              <input
-                                type="number"
-                                min="1"
-                                value={item.quantity}
-                                onChange={(e) => handleItemChange(idx, 'quantity', e.target.value)}
-                                className="w-full px-2 py-1 border border-slate-300 rounded text-xs text-right focus:outline-none focus:border-amber-500"
-                              />
-                            </td>
-                            <td className="px-3 py-2">
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={item.unitCost}
-                                onChange={(e) => handleItemChange(idx, 'unitCost', e.target.value)}
-                                className="w-full px-2 py-1 border border-slate-300 rounded text-xs text-right focus:outline-none focus:border-amber-500"
-                              />
-                            </td>
-                            <td className="px-3 py-2 text-right font-mono font-semibold text-slate-800">
-                              Rs. {item.total.toFixed(2)}
-                            </td>
-                            <td className="px-2 py-2 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveItemRow(idx)}
-                                className="text-slate-400 hover:text-amber-600 p-1"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
+                      ))}
                     </tbody>
                   </table>
                 </div>

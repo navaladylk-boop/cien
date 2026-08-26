@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { StorageService } from '../lib/storage';
 import { SaleReturn, SaleReturnItem, Customer, Product, SaleInvoice } from '../types';
+import { SearchableCustomerSelect, SearchableProductSelect } from './SearchableSelect';
+import { handleEnterKeyNavigation } from '../lib/keyboardNav';
 
 interface SalesReturnProps {
   currentCompanyId: string;
@@ -41,6 +43,16 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
   const [notes, setNotes] = useState('');
   const [discountAmount, setDiscountAmount] = useState<number>(0);
 
+  const createEmptyItem = () => ({
+    productId: '',
+    productCode: '',
+    productName: '',
+    unit: 'Pcs',
+    quantity: 1,
+    unitPrice: 0,
+    total: 0
+  });
+
   const [items, setItems] = useState<Array<{
     productId: string;
     productCode: string;
@@ -49,10 +61,13 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
     quantity: number;
     unitPrice: number;
     total: number;
-  }>>([]);
+  }>>([createEmptyItem()]);
 
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const settings = StorageService.getSettings();
+  const currencySymbol = settings?.currencySymbol || 'Rs.';
 
   useEffect(() => {
     loadData();
@@ -63,6 +78,16 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
     setCustomers(StorageService.getCustomers(currentCompanyId));
     setProducts(StorageService.getProducts(currentCompanyId));
     setInvoices(StorageService.getSales(currentCompanyId));
+  };
+
+  const handleCustomerSelect = (customerId: string, _name?: string) => {
+    setSelectedCustomerId(customerId);
+    setTimeout(() => {
+      const firstProductInput = document.getElementById('sale-return-product-search-0') as HTMLInputElement | null;
+      if (firstProductInput) {
+        firstProductInput.focus();
+      }
+    }, 60);
   };
 
   const handleInvoiceSelect = (invId: string) => {
@@ -80,44 +105,62 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
         unitPrice: item.unitPrice || 0,
         total: item.total || 0
       }));
-      setItems(mappedItems);
+      setItems(mappedItems.length > 0 ? mappedItems : [createEmptyItem()]);
     }
   };
 
   const handleAddItemRow = () => {
-    if (products.length === 0) return;
-    const firstP = products[0];
-    setItems((prev) => [
-      ...prev,
-      {
-        productId: firstP.id,
-        productCode: firstP.code || '',
-        productName: firstP.name,
-        unit: firstP.unit || 'Pcs',
-        quantity: 1,
-        unitPrice: firstP.sellingPrice || 0,
-        total: firstP.sellingPrice || 0
+    setItems((prev) => [...prev, createEmptyItem()]);
+    const newIdx = items.length;
+    setTimeout(() => {
+      const prodInput = document.getElementById(`sale-return-product-search-${newIdx}`) as HTMLInputElement | null;
+      if (prodInput) {
+        prodInput.focus();
       }
-    ]);
+    }, 60);
   };
 
-  const handleItemChange = (index: number, field: string, value: any) => {
+  const handleProductSelect = (index: number, productId: string) => {
+    const prod = products.find((p) => p.id === productId);
+    setItems((prev) => {
+      const updated = [...prev];
+      if (prod) {
+        const qty = updated[index]?.quantity || 1;
+        const price = prod.sellingPrice || 0;
+        updated[index] = {
+          productId: prod.id,
+          productCode: prod.code || '',
+          productName: prod.name,
+          unit: prod.unit || 'Pcs',
+          quantity: qty,
+          unitPrice: price,
+          total: Number((qty * price).toFixed(2))
+        };
+      } else {
+        updated[index] = createEmptyItem();
+      }
+      return updated;
+    });
+
+    if (prod) {
+      setTimeout(() => {
+        const qtyInput = document.getElementById(`sale-return-qty-input-${index}`) as HTMLInputElement | null;
+        if (qtyInput) {
+          qtyInput.focus();
+          qtyInput.select();
+        }
+      }, 60);
+    }
+  };
+
+  const handleItemChange = (index: number, field: 'quantity' | 'unitPrice', value: number) => {
     setItems((prev) => {
       const updated = [...prev];
       const item = { ...updated[index] };
-      if (field === 'productId') {
-        const p = products.find((prod) => prod.id === value);
-        if (p) {
-          item.productId = p.id;
-          item.productCode = p.code || '';
-          item.productName = p.name;
-          item.unit = p.unit || 'Pcs';
-          item.unitPrice = p.sellingPrice || 0;
-        }
-      } else if (field === 'quantity') {
-        item.quantity = Math.max(1, Number(value) || 0);
+      if (field === 'quantity') {
+        item.quantity = Math.max(1, value);
       } else if (field === 'unitPrice') {
-        item.unitPrice = Math.max(0, Number(value) || 0);
+        item.unitPrice = Math.max(0, value);
       }
       item.total = Number((item.quantity * item.unitPrice).toFixed(2));
       updated[index] = item;
@@ -126,7 +169,10 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
   };
 
   const handleRemoveItemRow = (index: number) => {
-    setItems((prev) => prev.filter((_, i) => i !== index));
+    setItems((prev) => {
+      const filtered = prev.filter((_, i) => i !== index);
+      return filtered.length > 0 ? filtered : [createEmptyItem()];
+    });
   };
 
   const calculateSubtotal = () => items.reduce((sum, i) => sum + i.total, 0);
@@ -140,7 +186,7 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
     setReason('Defective / Returned Item');
     setNotes('');
     setDiscountAmount(0);
-    setItems([]);
+    setItems([createEmptyItem()]);
     setFeedback(null);
   };
 
@@ -150,8 +196,10 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
       setFeedback({ type: 'error', message: 'Please select a customer.' });
       return;
     }
-    if (items.length === 0) {
-      setFeedback({ type: 'error', message: 'Please add at least one item to return.' });
+
+    const validItems = items.filter((i) => i.productId && i.quantity > 0);
+    if (validItems.length === 0) {
+      setFeedback({ type: 'error', message: 'Please select at least one valid product item to return.' });
       return;
     }
 
@@ -161,8 +209,8 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
     const cust = customers.find((c) => c.id === selectedCustomerId);
     const inv = invoices.find((i) => i.id === selectedInvoiceId);
 
-    const subtotal = calculateSubtotal();
-    const grandTotal = calculateGrandTotal();
+    const subtotal = validItems.reduce((sum, i) => sum + i.total, 0);
+    const grandTotal = Math.max(0, subtotal - discountAmount);
 
     const result = await StorageService.createSaleReturnAsync(
       {
@@ -174,7 +222,7 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
         invoiceNumber: inv ? inv.invoiceNumber : undefined,
         reason,
         type: returnType,
-        items,
+        items: validItems,
         subtotal,
         discount: discountAmount,
         discountAmount,
@@ -362,20 +410,16 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
               {/* Top Row fields */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Customer *</label>
-                  <select
-                    value={selectedCustomerId}
-                    onChange={(e) => setSelectedCustomerId(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                  <SearchableCustomerSelect
+                    customers={customers}
+                    selectedCustomerId={selectedCustomerId}
+                    onSelect={handleCustomerSelect}
+                    currencySymbol={currencySymbol}
+                    allowWalkIn={false}
+                    label="Customer *"
+                    placeholder="Search customer name, code, phone..."
                     required
-                  >
-                    <option value="">Select Customer...</option>
-                    {customers.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} (Bal: Rs. {c.outstandingBalance})
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
 
                 <div>
@@ -383,12 +427,12 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
                   <select
                     value={selectedInvoiceId}
                     onChange={(e) => handleInvoiceSelect(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                    className="w-full min-h-[42px] px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
                   >
                     <option value="">Manual / No Invoice link</option>
                     {invoices.map((inv) => (
                       <option key={inv.id} value={inv.id}>
-                        {inv.invoiceNumber} - {inv.customerName} (Rs. {inv.grandTotal})
+                        {inv.invoiceNumber} - {inv.customerName} ({currencySymbol} {inv.grandTotal})
                       </option>
                     ))}
                   </select>
@@ -400,7 +444,7 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
                     type="date"
                     value={returnDate}
                     onChange={(e) => setReturnDate(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                    className="w-full min-h-[42px] px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
                   />
                 </div>
               </div>
@@ -441,7 +485,7 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
                     value={reason}
                     onChange={(e) => setReason(e.target.value)}
                     placeholder="e.g. Faulty goods, wrong size, customer cancellation"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                    className="w-full min-h-[42px] px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
                   />
                 </div>
               </div>
@@ -453,83 +497,98 @@ export const SalesReturnManagement: React.FC<SalesReturnProps> = ({ currentCompa
                   <button
                     type="button"
                     onClick={handleAddItemRow}
-                    className="text-xs font-semibold text-rose-600 hover:text-rose-700 inline-flex items-center gap-1"
+                    className="text-xs font-semibold text-rose-600 hover:text-rose-700 inline-flex items-center gap-1 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Add Item Row
                   </button>
                 </div>
 
-                <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <div className="border border-slate-200 rounded-lg overflow-visible">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-100 border-b border-slate-200 text-slate-600 font-semibold">
                       <tr>
-                        <th className="px-3 py-2">Product</th>
-                        <th className="px-3 py-2 w-24">Unit</th>
+                        <th className="px-3 py-2">Product Item (Search Name / Code)</th>
+                        <th className="px-3 py-2 w-20">Unit</th>
                         <th className="px-3 py-2 w-24 text-right">Qty</th>
-                        <th className="px-3 py-2 w-32 text-right">Unit Price</th>
+                        <th className="px-3 py-2 w-32 text-right">Unit Price ({currencySymbol})</th>
                         <th className="px-3 py-2 w-32 text-right">Total</th>
                         <th className="px-2 py-2 w-10 text-center"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
-                      {items.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="px-3 py-6 text-center text-slate-400">
-                            No items added. Click "Add Item Row" or select an invoice above.
+                      {items.map((item, idx) => (
+                        <tr key={idx} className="bg-white hover:bg-slate-50/50">
+                          <td className="px-3 py-2">
+                            <SearchableProductSelect
+                              id={`sale-return-product-search-${idx}`}
+                              products={products}
+                              selectedProductId={item.productId}
+                              onSelect={(prodId) => handleProductSelect(idx, prodId)}
+                              currencySymbol={currencySymbol}
+                              priceType="SELLING"
+                              placeholder="Type product name, code, barcode to search..."
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-slate-500 font-medium">{item.unit || 'Pcs'}</td>
+                          <td className="px-3 py-2">
+                            <input
+                              id={`sale-return-qty-input-${idx}`}
+                              type="number"
+                              min="1"
+                              value={item.quantity || ''}
+                              onChange={(e) => handleItemChange(idx, 'quantity', Number(e.target.value) || 0)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  if (idx === items.length - 1) {
+                                    handleAddItemRow();
+                                  } else {
+                                    const nextInput = document.getElementById(`sale-return-product-search-${idx + 1}`) as HTMLInputElement | null;
+                                    if (nextInput) nextInput.focus();
+                                  }
+                                }
+                              }}
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs text-right font-mono font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={item.unitPrice || ''}
+                              onChange={(e) => handleItemChange(idx, 'unitPrice', Number(e.target.value) || 0)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  if (idx === items.length - 1) {
+                                    handleAddItemRow();
+                                  } else {
+                                    const nextInput = document.getElementById(`sale-return-product-search-${idx + 1}`) as HTMLInputElement | null;
+                                    if (nextInput) nextInput.focus();
+                                  }
+                                }
+                              }}
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs text-right font-mono font-bold focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono font-semibold text-slate-800">
+                            {currencySymbol} {item.total.toFixed(2)}
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveItemRow(idx)}
+                              disabled={items.length === 1 && !item.productId}
+                              className="text-slate-400 hover:text-rose-600 p-1 rounded hover:bg-rose-50 disabled:opacity-30 cursor-pointer"
+                              title="Remove item"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
                           </td>
                         </tr>
-                      ) : (
-                        items.map((item, idx) => (
-                          <tr key={idx} className="bg-white">
-                            <td className="px-3 py-2">
-                              <select
-                                value={item.productId}
-                                onChange={(e) => handleItemChange(idx, 'productId', e.target.value)}
-                                className="w-full px-2 py-1 border border-slate-300 rounded text-xs focus:outline-none focus:border-rose-500"
-                              >
-                                {products.map((p) => (
-                                  <option key={p.id} value={p.id}>
-                                    {p.name} ({p.code})
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="px-3 py-2 text-slate-500">{item.unit}</td>
-                            <td className="px-3 py-2">
-                              <input
-                                type="number"
-                                min="1"
-                                value={item.quantity}
-                                onChange={(e) => handleItemChange(idx, 'quantity', e.target.value)}
-                                className="w-full px-2 py-1 border border-slate-300 rounded text-xs text-right focus:outline-none focus:border-rose-500"
-                              />
-                            </td>
-                            <td className="px-3 py-2">
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={item.unitPrice}
-                                onChange={(e) => handleItemChange(idx, 'unitPrice', e.target.value)}
-                                className="w-full px-2 py-1 border border-slate-300 rounded text-xs text-right focus:outline-none focus:border-rose-500"
-                              />
-                            </td>
-                            <td className="px-3 py-2 text-right font-mono font-semibold text-slate-800">
-                              Rs. {item.total.toFixed(2)}
-                            </td>
-                            <td className="px-2 py-2 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveItemRow(idx)}
-                                className="text-slate-400 hover:text-rose-600 p-1"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
+                      ))}
                     </tbody>
                   </table>
                 </div>
