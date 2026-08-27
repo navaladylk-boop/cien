@@ -56,6 +56,11 @@ export const Purchases: React.FC<PurchasesProps> = ({
   session
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [excelPasteData, setExcelPasteData] = useState<{
+    isOpen: boolean;
+    rows: string[][];
+    mapping: Record<string, number>;
+  }>({ isOpen: false, rows: [], mapping: {} });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingPurchase, setEditingPurchase] = useState<PurchaseInvoice | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -185,6 +190,92 @@ export const Purchases: React.FC<PurchasesProps> = ({
     newItems[index].discountType =
       newItems[index].discountType === 'FIXED' ? 'PERCENT' : 'FIXED';
     setLineItems(newItems);
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    // Only process paste if we are in the Purchase modal and not typing in a specific input where they want normal text
+    // E.g., if target is a note field, we might not want to intercept. But let's check for tabs/newlines to identify tabular data.
+    const text = e.clipboardData.getData('text');
+    if (!text || !text.includes('\t')) return;
+
+    // Optional: if user is typing in 'notes', ignore Excel paste
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'TEXTAREA') return;
+
+    const rows = text.split(/\r?\n/).filter(line => line.trim()).map(line => line.split('\t').map(c => c.trim()));
+    if (rows.length < 1) return;
+    if (rows.length === 1 && rows[0].length === 1) return; // Not really table data
+
+    e.preventDefault();
+
+    const firstRow = rows[0].map(c => c.toLowerCase());
+    const mapping: Record<string, number> = {};
+    let hasHeaders = false;
+
+    firstRow.forEach((col, idx) => {
+      if (col.includes('item') || col.includes('product') || col.includes('name')) { mapping['Item Name'] = idx; hasHeaders = true; }
+      else if (col.includes('qty') || col.includes('quantity')) { mapping['Qty'] = idx; hasHeaders = true; }
+      else if (col.includes('rate') || col.includes('price') || col.includes('cost')) { mapping['Rate'] = idx; hasHeaders = true; }
+      else if (col.includes('discount') || col.includes('disc')) { mapping['Discount'] = idx; hasHeaders = true; }
+      else if (col.includes('amount') || col.includes('total')) { mapping['Amount'] = idx; hasHeaders = true; }
+    });
+
+    if (!hasHeaders) {
+      if (rows[0].length >= 1) mapping['Item Name'] = 0;
+      if (rows[0].length >= 2) mapping['Qty'] = 1;
+      if (rows[0].length >= 3) mapping['Rate'] = 2;
+      if (rows[0].length >= 4) mapping['Discount'] = 3;
+      if (rows[0].length >= 5) mapping['Amount'] = 4;
+    } else {
+      rows.shift();
+    }
+
+    setExcelPasteData({ isOpen: true, rows, mapping });
+  };
+
+  const confirmPaste = (finalMapping: Record<string, number>) => {
+    const newItems: typeof lineItems = [];
+    excelPasteData.rows.forEach(row => {
+      const itemName = finalMapping['Item Name'] !== undefined ? row[finalMapping['Item Name']] : '';
+      if (!itemName) return;
+
+      const matchedProd = products.find(p => p.name.toLowerCase() === itemName.toLowerCase() || p.code.toLowerCase() === itemName.toLowerCase());
+      
+      let qtyStr = finalMapping['Qty'] !== undefined ? row[finalMapping['Qty']] : '1';
+      let rateStr = finalMapping['Rate'] !== undefined ? row[finalMapping['Rate']] : (matchedProd ? matchedProd.costPrice.toString() : '0');
+      let discStr = finalMapping['Discount'] !== undefined ? row[finalMapping['Discount']] : '0';
+      
+      // Clean numbers
+      qtyStr = qtyStr.replace(/[^0-9.-]+/g, '');
+      rateStr = rateStr.replace(/[^0-9.-]+/g, '');
+      discStr = discStr.replace(/[^0-9.-]+/g, '');
+
+      if (!qtyStr) qtyStr = '1';
+      if (!rateStr) rateStr = '0';
+      if (!discStr) discStr = '0';
+
+      // Amount is calculated natively by our system (qty * rate - discount). 
+      // We don't strictly need to override our math with their amount, 
+      // but if we wanted to we could adjust rate or discount.
+      // We will stick to standard calculation logic per requirements.
+
+      newItems.push({
+        productId: matchedProd?.id || '',
+        productCode: matchedProd?.code || '',
+        productName: matchedProd?.name || itemName,
+        quantity: qtyStr,
+        unitCost: rateStr,
+        discount: discStr,
+        discountType: defaultDiscountType
+      });
+    });
+
+    if (newItems.length > 0) {
+      // Remove empty trailing items
+      const existing = lineItems.filter(i => i.productId || i.productName);
+      setLineItems([...existing, ...newItems]);
+    }
+    setExcelPasteData({ isOpen: false, rows: [], mapping: {} });
   };
 
   const handleAddLine = () => {
@@ -661,9 +752,114 @@ export const Purchases: React.FC<PurchasesProps> = ({
         </div>
       )}
 
+      {excelPasteData.isOpen && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full p-6 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-bold text-slate-900">Map Excel Columns</h3>
+              <button onClick={() => setExcelPasteData({ isOpen: false, rows: [], mapping: {} })} className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="mb-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+              {['Item Name', 'Qty', 'Rate', 'Discount', 'Amount'].map(field => (
+                <div key={field} className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <label className="block text-xs font-bold text-slate-500 mb-2">{field} Column</label>
+                  <select
+                    className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm"
+                    value={excelPasteData.mapping[field] !== undefined ? excelPasteData.mapping[field] : ''}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setExcelPasteData(prev => {
+                        const newMapping = { ...prev.mapping };
+                        if (val === '') {
+                          delete newMapping[field];
+                        } else {
+                          newMapping[field] = parseInt(val, 10);
+                        }
+                        return { ...prev, mapping: newMapping };
+                      });
+                    }}
+                  >
+                    <option value="">-- Ignore --</option>
+                    {Array.from({ length: Math.max(...excelPasteData.rows.map(r => r.length), 0) }).map((_, i) => (
+                      <option key={i} value={i}>Column {String.fromCharCode(65 + i)}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            <div className="max-h-[40vh] overflow-auto border border-slate-200 rounded-xl mb-6">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 sticky top-0 border-b border-slate-200 shadow-sm">
+                  <tr>
+                    <th className="p-3 font-bold text-slate-700">Status</th>
+                    <th className="p-3 font-bold text-slate-700">Item Name</th>
+                    <th className="p-3 font-bold text-slate-700">Qty</th>
+                    <th className="p-3 font-bold text-slate-700">Rate</th>
+                    <th className="p-3 font-bold text-slate-700">Discount</th>
+                    <th className="p-3 font-bold text-slate-700">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {excelPasteData.rows.map((row, idx) => {
+                    const itemName = excelPasteData.mapping['Item Name'] !== undefined ? row[excelPasteData.mapping['Item Name']] : '';
+                    const qty = excelPasteData.mapping['Qty'] !== undefined ? row[excelPasteData.mapping['Qty']] : '1';
+                    const rate = excelPasteData.mapping['Rate'] !== undefined ? row[excelPasteData.mapping['Rate']] : '0';
+                    const disc = excelPasteData.mapping['Discount'] !== undefined ? row[excelPasteData.mapping['Discount']] : '0';
+                    const amount = excelPasteData.mapping['Amount'] !== undefined ? row[excelPasteData.mapping['Amount']] : '-';
+                    
+                    const matchedProd = products.find(p => p.name.toLowerCase() === itemName.toLowerCase() || p.code.toLowerCase() === itemName.toLowerCase());
+                    
+                    return (
+                      <tr key={idx} className="hover:bg-slate-50">
+                        <td className="p-3">
+                          {matchedProd ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-600 font-medium text-xs bg-emerald-50 px-2 py-1 rounded-full"><CheckCircle2 className="w-3 h-3" /> Matched</span>
+                          ) : itemName ? (
+                            <span className="inline-flex items-center gap-1 text-rose-600 font-medium text-xs bg-rose-50 px-2 py-1 rounded-full"><X className="w-3 h-3" /> Not Found</span>
+                          ) : (
+                            <span className="text-slate-400 text-xs">Empty</span>
+                          )}
+                        </td>
+                        <td className="p-3 font-medium text-slate-900">{itemName}</td>
+                        <td className="p-3 text-slate-600 font-mono">{qty}</td>
+                        <td className="p-3 text-slate-600 font-mono">{rate}</td>
+                        <td className="p-3 text-slate-600 font-mono">{disc}</td>
+                        <td className="p-3 text-slate-600 font-mono">{amount}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setExcelPasteData({ isOpen: false, rows: [], mapping: {} })}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 font-bold rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => confirmPaste(excelPasteData.mapping)}
+                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md hover:shadow-lg transition-all"
+              >
+                Add Valid Rows
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Create / Edit Purchase Modal - Spacious & Easy-to-use Layout */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 md:p-6 overflow-y-auto">
+        <div 
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 md:p-6 overflow-y-auto"
+          onPaste={handlePaste}
+        >
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-6xl w-full p-4 sm:p-6 md:p-8 animate-in fade-in zoom-in-95 my-2 sm:my-6 max-h-[95vh] flex flex-col">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
               <div className="flex items-center gap-3">
