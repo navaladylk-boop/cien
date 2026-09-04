@@ -998,10 +998,29 @@ export const SupabaseSyncService = {
     }
   },
 
-  async deleteSaleInvoice(invoiceId: string): Promise<{ success: boolean; error?: string }> {
+  async deleteSaleInvoice(invoiceId: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
     try {
+      const compId = companyId || 'comp-1';
+      // First invoke atomic void_sale_invoice_rpc for safe inventory & customer balance reversal
+      const { data, error } = await client.rpc('void_sale_invoice_rpc', {
+        p_invoice_id: invoiceId,
+        p_company_id: compId
+      });
+
+      if (!error && data) {
+        if (typeof data === 'object' && data.success === false) {
+          return { success: false, error: data.error || 'Database rejected sale invoice voiding.' };
+        }
+        return { success: true };
+      }
+
+      if (error && !error.message?.includes('function') && !error.message?.includes('does not exist')) {
+        return { success: false, error: error.message };
+      }
+
+      // Safe fallback if void RPC is not yet registered in database
       try {
         await client.from('busy_ufo_sale_items').delete().eq('invoice_id', invoiceId);
       } catch (err) {
@@ -1010,11 +1029,13 @@ export const SupabaseSyncService = {
 
       try {
         await client.from('busy_ufo_customer_receipts').update({ invoice_id: null }).eq('invoice_id', invoiceId);
-      } catch {}
+      } catch (err) {
+        console.warn('Warning unlinking customer receipts:', err);
+      }
 
-      const { error } = await client.from('busy_ufo_sales').delete().eq('id', invoiceId);
-      if (error) {
-        return { success: false, error: error.message };
+      const { error: delErr } = await client.from('busy_ufo_sales').delete().eq('id', invoiceId);
+      if (delErr) {
+        return { success: false, error: delErr.message };
       }
       return { success: true };
     } catch (e: any) {
@@ -1176,10 +1197,29 @@ export const SupabaseSyncService = {
     }
   },
 
-  async deletePurchaseInvoice(purchaseId: string): Promise<{ success: boolean; error?: string }> {
+  async deletePurchaseInvoice(purchaseId: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
     try {
+      const compId = companyId || 'comp-1';
+      // First invoke atomic void_purchase_invoice_rpc for safe stock & supplier balance reversal
+      const { data, error } = await client.rpc('void_purchase_invoice_rpc', {
+        p_purchase_id: purchaseId,
+        p_company_id: compId
+      });
+
+      if (!error && data) {
+        if (typeof data === 'object' && data.success === false) {
+          return { success: false, error: data.error || 'Database rejected purchase invoice voiding.' };
+        }
+        return { success: true };
+      }
+
+      if (error && !error.message?.includes('function') && !error.message?.includes('does not exist')) {
+        return { success: false, error: error.message };
+      }
+
+      // Safe fallback if void RPC is not yet registered in database
       try {
         await client.from('busy_ufo_purchase_items').delete().eq('purchase_id', purchaseId);
       } catch (err) {
@@ -1188,11 +1228,13 @@ export const SupabaseSyncService = {
 
       try {
         await client.from('busy_ufo_supplier_payments').update({ purchase_id: null }).eq('purchase_id', purchaseId);
-      } catch {}
+      } catch (err) {
+        console.warn('Warning unlinking supplier payments:', err);
+      }
 
-      const { error } = await client.from('busy_ufo_purchases').delete().eq('id', purchaseId);
-      if (error) {
-        return { success: false, error: error.message };
+      const { error: delErr } = await client.from('busy_ufo_purchases').delete().eq('id', purchaseId);
+      if (delErr) {
+        return { success: false, error: delErr.message };
       }
       return { success: true };
     } catch (e: any) {
@@ -2093,7 +2135,7 @@ export const SupabaseSyncService = {
     try {
       await ensureCompanyExists(client, pdc.companyId || 'comp-1');
 
-      // Try PostgreSQL RPC
+      // Execute atomic PostgreSQL RPC strictly — NO direct table upsert fallback
       const { data, error } = await client.rpc('save_pdc_rpc', {
         p_request_id: reqId,
         p_company_id: pdc.companyId || 'comp-1',
@@ -2110,46 +2152,90 @@ export const SupabaseSyncService = {
         p_notes: pdc.notes || ''
       });
 
-      if (!error && data) {
+      if (error) {
+        // Safe timeout recovery without direct table fallback
+        const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
+        if (isTimeout) {
+          const recovery = await this.getTransactionByRequestId(reqId);
+          if (recovery.found && recovery.id) {
+            return {
+              success: true,
+              isDuplicate: true,
+              data: {
+                ...pdc,
+                id: recovery.id,
+                chequeNumber: recovery.doc_number || pdc.chequeNumber,
+                requestId: reqId
+              }
+            };
+          }
+        }
+        return { success: false, error: error.message };
+      }
+
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected PDC creation.' };
+      }
+
+      if (data) {
         if (typeof data === 'object' && data.success !== undefined) {
-          return { success: data.success, isDuplicate: data.is_duplicate, data: data.data };
+          return { success: data.success, isDuplicate: data.is_duplicate || false, data: data.data || data };
         }
         return { success: true, data };
       }
 
-      // If RPC is missing or fails gracefully, fallback to direct upsert
-      const payload = {
-        id: pdc.id,
-        request_id: reqId,
-        company_id: pdc.companyId || 'comp-1',
-        type: pdc.type,
-        party_id: pdc.partyId || null,
-        party_type: pdc.partyType,
-        party_name: pdc.partyName,
-        cheque_number: pdc.chequeNumber,
-        bank_name: pdc.bankName,
-        cleared_bank_name: pdc.clearedBankName || null,
-        cheque_date: pdc.chequeDate,
-        amount: Number(pdc.amount || 0),
-        status: pdc.status || 'PENDING',
-        reference_voucher_no: pdc.referenceVoucherNo || '',
-        notes: pdc.notes || '',
-        cleared_at: pdc.clearedAt || null,
-        deposit_date: pdc.depositDate || null,
-        bounce_date: pdc.bounceDate || null,
-        bounce_reason: pdc.bounceReason || null,
-        bounce_charges: pdc.bounceCharges || 0.00,
-        linked_journal_id: pdc.linkedJournalId || null
-      };
+      return { success: false, error: 'Unknown response from save_pdc_rpc.' };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
+    }
+  },
 
-      const { error: upsertErr } = await client.from('busy_ufo_pdcs').upsert(payload, { onConflict: 'id' });
-      if (upsertErr) {
-        if (upsertErr.message?.includes('request_id') || upsertErr.code === '23505') {
-          return { success: true, isDuplicate: true };
-        }
-        return { success: false, error: upsertErr.message };
+  async updatePdcRpc(
+    pdc: Partial<PdcTransaction> & { id: string },
+    requestId?: string
+  ): Promise<{ success: boolean; data?: any; error?: string; isDuplicate?: boolean }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = requestId || pdc.requestId || `req_pdc_upd_${pdc.id}_${Date.now()}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'An update with this Request ID is already in-flight.' };
+    }
+    _inFlightRequests.add(reqId);
+
+    try {
+      const compId = pdc.companyId || 'comp-1';
+      await ensureCompanyExists(client, compId);
+
+      const { data, error } = await client.rpc('update_pdc_rpc', {
+        p_pdc_id: pdc.id,
+        p_request_id: reqId,
+        p_company_id: compId,
+        p_type: pdc.type,
+        p_party_id: pdc.partyId || null,
+        p_party_type: pdc.partyType || 'CUSTOMER',
+        p_party_name: pdc.partyName || 'Party',
+        p_cheque_number: pdc.chequeNumber || '',
+        p_bank_name: pdc.bankName || '',
+        p_cheque_date: pdc.chequeDate || new Date().toISOString().split('T')[0],
+        p_amount: Number(pdc.amount || 0),
+        p_notes: pdc.notes || ''
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
       }
-      return { success: true, data: payload };
+
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected PDC update.' };
+      }
+
+      return {
+        success: true,
+        data: data?.data || data
+      };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {
@@ -2182,27 +2268,29 @@ export const SupabaseSyncService = {
         p_notes: notes || ''
       });
 
-      if (!error && data) {
+      if (error) {
+        const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
+        if (isTimeout) {
+          const recovery = await this.getTransactionByRequestId(reqId);
+          if (recovery.found && recovery.id) {
+            return { success: true, isDuplicate: true, data: recovery };
+          }
+        }
+        return { success: false, error: error.message };
+      }
+
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected PDC deposit.' };
+      }
+
+      if (data) {
         if (typeof data === 'object' && data.success !== undefined) {
           return { success: data.success, data: data.data, isDuplicate: data.is_duplicate };
         }
         return { success: true, data };
       }
 
-      // Fallback direct update
-      const { error: updErr } = await client
-        .from('busy_ufo_pdcs')
-        .update({
-          status: 'DEPOSITED',
-          deposit_date: depositDate,
-          cleared_bank_name: bankName,
-          notes: notes ? notes : undefined,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', pdcId);
-
-      if (updErr) return { success: false, error: updErr.message };
-      return { success: true };
+      return { success: false, error: 'Unknown response from deposit_pdc_rpc.' };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {
@@ -2355,63 +2443,43 @@ export const SupabaseSyncService = {
   },
 
   async syncPdc(pdc: PdcTransaction): Promise<{ success: boolean; error?: string; isDuplicate?: boolean }> {
-    const client = getSupabaseClient();
-    if (!client) return { success: false, error: 'Supabase not configured' };
-
-    const reqId = pdc.requestId || `req_pdc_${pdc.id}`;
-    if (_inFlightRequests.has(reqId)) {
-      return { success: false, error: 'A transaction with this Request ID is already in-flight.' };
+    // All PDC mutations strictly route to atomic RPCs
+    if (pdc.id) {
+      const res = await this.savePdcRpc(pdc);
+      return { success: res.success, error: res.error, isDuplicate: res.isDuplicate };
     }
-    _inFlightRequests.add(reqId);
-
-    try {
-      await ensureCompanyExists(client, pdc.companyId || 'comp-1');
-
-      const payload = {
-        id: pdc.id,
-        request_id: reqId,
-        company_id: pdc.companyId || 'comp-1',
-        type: pdc.type,
-        party_id: pdc.partyId || null,
-        party_type: pdc.partyType,
-        party_name: pdc.partyName,
-        cheque_number: pdc.chequeNumber,
-        bank_name: pdc.bankName,
-        cleared_bank_name: pdc.clearedBankName || null,
-        cheque_date: pdc.chequeDate,
-        amount: Number(pdc.amount || 0),
-        status: pdc.status,
-        reference_voucher_no: pdc.referenceVoucherNo || '',
-        notes: pdc.notes || '',
-        cleared_at: pdc.clearedAt || null,
-        deposit_date: pdc.depositDate || null,
-        bounce_date: pdc.bounceDate || null,
-        bounce_reason: pdc.bounceReason || null,
-        bounce_charges: pdc.bounceCharges || 0.00,
-        linked_journal_id: pdc.linkedJournalId || null
-      };
-
-      const { error } = await client.from('busy_ufo_pdcs').upsert(payload, { onConflict: 'id' });
-      if (error) {
-        if (error.message?.includes('request_id') || error.code === '23505') {
-          return { success: true, isDuplicate: true };
-        }
-        return { success: false, error: error.message };
-      }
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e?.message };
-    } finally {
-      _inFlightRequests.delete(reqId);
-    }
+    return this.savePdcRpc(pdc);
   },
 
-  async deletePdc(id: string): Promise<{ success: boolean; error?: string }> {
+  async deletePdc(id: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
     try {
-      const { error } = await client.from('busy_ufo_pdcs').delete().eq('id', id);
-      if (error) return { success: false, error: error.message };
+      const compId = companyId || 'comp-1';
+      // First try atomic delete_pdc_rpc
+      const { data, error } = await client.rpc('delete_pdc_rpc', {
+        p_pdc_id: id,
+        p_company_id: compId
+      });
+
+      if (error) {
+        // If RPC function is not yet deployed, enforce strict safety checks
+        const { data: existing } = await client.from('busy_ufo_pdcs').select('status, linked_journal_id').eq('id', id).maybeSingle();
+        if (existing?.status === 'CLEARED') {
+          return { success: false, error: 'Cannot delete a CLEARED cheque. Bounced/reversal journal entries exist. Reverse the transaction first to maintain accounting integrity.' };
+        }
+        if (existing?.linked_journal_id) {
+          return { success: false, error: `Cannot delete PDC with linked journal entry ${existing.linked_journal_id}. Accounting audit trail must be preserved.` };
+        }
+        const { error: delErr } = await client.from('busy_ufo_pdcs').delete().eq('id', id);
+        if (delErr) return { success: false, error: delErr.message };
+        return { success: true };
+      }
+
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected PDC deletion.' };
+      }
+
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };

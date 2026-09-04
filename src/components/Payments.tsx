@@ -355,9 +355,11 @@ export const Payments: React.FC<PaymentsProps> = ({
         unallocatedAmount: unallocated > 0 ? unallocated : undefined
       });
 
+      let pdcNotice = '';
       if (receiptMode === 'CHEQUE' || receiptIsPdc) {
         const chqNum = receiptChequeNo || receiptRef || `CHQ-${rec.receiptNumber}`;
-        StorageService.savePdcAsync({
+        const pdcRes = await StorageService.savePdcAsync({
+          companyId: rec.companyId || session?.user?.companyId || 'comp-1',
           type: 'RECEIVED',
           partyId: receiptCustomerId,
           partyType: 'CUSTOMER',
@@ -369,10 +371,14 @@ export const Payments: React.FC<PaymentsProps> = ({
           status: 'PENDING',
           referenceVoucherNo: rec.receiptNumber,
           notes: `Customer Receipt ${rec.receiptNumber}${receiptNotes ? `: ${receiptNotes}` : ''}`
-        }).catch((err) => console.warn('Auto PDC save error:', err));
+        });
+        if (pdcRes.success) {
+          pdcNotice = ' & PDC cheque registered in PDC module';
+        } else {
+          showToast('error', `Receipt saved, but PDC registration failed: ${pdcRes.error}`);
+        }
       }
 
-      const pdcNotice = (receiptMode === 'CHEQUE' || receiptIsPdc) ? ' & PDC cheque registered in PDC module' : '';
       const allocText = allocations.length > 0 ? ` & adjusted ${allocations.length} previous bill(s)` : '';
       showToast('success', `Receipt ${rec.receiptNumber} recorded! Balance updated${allocText}${pdcNotice}.`);
       setIsReceiptModalOpen(false);
@@ -447,9 +453,11 @@ export const Payments: React.FC<PaymentsProps> = ({
         unallocatedAmount: unallocated > 0 ? unallocated : undefined
       });
 
+      let pdcNotice = '';
       if (paymentMode === 'CHEQUE' || paymentIsPdc) {
         const chqNum = paymentChequeNo || paymentRef || `CHQ-${pay.paymentNumber}`;
-        StorageService.savePdcAsync({
+        const pdcRes = await StorageService.savePdcAsync({
+          companyId: pay.companyId || session?.user?.companyId || 'comp-1',
           type: 'ISSUED',
           partyId: paymentSupplierId,
           partyType: 'SUPPLIER',
@@ -461,10 +469,14 @@ export const Payments: React.FC<PaymentsProps> = ({
           status: 'PENDING',
           referenceVoucherNo: pay.paymentNumber,
           notes: `Supplier Payment ${pay.paymentNumber}${paymentNotes ? `: ${paymentNotes}` : ''}`
-        }).catch((err) => console.warn('Auto PDC save error:', err));
+        });
+        if (pdcRes.success) {
+          pdcNotice = ' & PDC cheque registered in PDC module';
+        } else {
+          showToast('error', `Payment saved, but PDC registration failed: ${pdcRes.error}`);
+        }
       }
 
-      const pdcNotice = (paymentMode === 'CHEQUE' || paymentIsPdc) ? ' & PDC cheque registered in PDC module' : '';
       const allocText = allocations.length > 0 ? ` & adjusted ${allocations.length} previous bill(s)` : '';
       showToast('success', `Payment ${pay.paymentNumber} recorded! Supplier payable updated${allocText}${pdcNotice}.`);
       setIsPaymentModalOpen(false);

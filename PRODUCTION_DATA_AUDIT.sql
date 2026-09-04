@@ -76,13 +76,32 @@ SELECT 'Sales without Company ID' AS audit_check, id, invoice_number FROM busy_u
 SELECT 'Purchases without Company ID' AS audit_check, id, purchase_number FROM busy_ufo_purchases WHERE company_id IS NULL OR company_id = '';
 SELECT 'Receipts without Company ID' AS audit_check, id, receipt_number FROM busy_ufo_customer_receipts WHERE company_id IS NULL OR company_id = '';
 SELECT 'Payments without Company ID' AS audit_check, id, payment_number FROM busy_ufo_supplier_payments WHERE company_id IS NULL OR company_id = '';
+SELECT 'PDCs without Company ID' AS audit_check, id, cheque_number FROM busy_ufo_pdcs WHERE company_id IS NULL OR company_id = '';
 
 -- 12. Check for Suspicious Negative Stock Values
 SELECT 'Negative Stock Products' AS audit_check, id, code, name, current_stock, company_id
 FROM busy_ufo_products
 WHERE current_stock < 0;
 
--- 13. Summary Counts of All Core Tables
+-- 13. PDC Integrity & Cleared Audit
+-- PDCs marked CLEARED without linked journal voucher
+SELECT 'Cleared PDC Without Linked Journal' AS audit_check, id, cheque_number, party_name, amount, company_id
+FROM busy_ufo_pdcs
+WHERE status = 'CLEARED' AND (linked_journal_id IS NULL OR linked_journal_id = '');
+
+-- Duplicate PDC Request IDs
+SELECT 'Duplicate PDC Request IDs' AS audit_check, request_id, COUNT(*)
+FROM busy_ufo_pdcs
+WHERE request_id IS NOT NULL AND request_id <> ''
+GROUP BY request_id
+HAVING COUNT(*) > 1;
+
+-- 14. Check Journal Entry Balancing (Debit Total must equal Credit Total)
+SELECT 'Unbalanced Journal Entries' AS audit_check, id, voucher_no, debit_total, credit_total, (debit_total - credit_total) AS difference, company_id
+FROM busy_ufo_journal_entries
+WHERE ABS(debit_total - credit_total) > 0.01;
+
+-- 15. Summary Counts of All Core Tables
 SELECT 'Table Record Counts' AS audit_check, 'companies' AS tbl, COUNT(*) FROM companies
 UNION ALL SELECT 'Table Record Counts', 'app_users', COUNT(*) FROM app_users
 UNION ALL SELECT 'Table Record Counts', 'busy_ufo_customers', COUNT(*) FROM busy_ufo_customers
@@ -92,4 +111,7 @@ UNION ALL SELECT 'Table Record Counts', 'busy_ufo_sales', COUNT(*) FROM busy_ufo
 UNION ALL SELECT 'Table Record Counts', 'busy_ufo_purchases', COUNT(*) FROM busy_ufo_purchases
 UNION ALL SELECT 'Table Record Counts', 'busy_ufo_customer_receipts', COUNT(*) FROM busy_ufo_customer_receipts
 UNION ALL SELECT 'Table Record Counts', 'busy_ufo_supplier_payments', COUNT(*) FROM busy_ufo_supplier_payments
-UNION ALL SELECT 'Table Record Counts', 'busy_ufo_expenses', COUNT(*) FROM busy_ufo_expenses;
+UNION ALL SELECT 'Table Record Counts', 'busy_ufo_expenses', COUNT(*) FROM busy_ufo_expenses
+UNION ALL SELECT 'Table Record Counts', 'busy_ufo_pdcs', COUNT(*) FROM busy_ufo_pdcs
+UNION ALL SELECT 'Table Record Counts', 'busy_ufo_journal_entries', COUNT(*) FROM busy_ufo_journal_entries;
+

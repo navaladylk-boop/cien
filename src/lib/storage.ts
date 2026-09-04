@@ -1116,7 +1116,9 @@ export const StorageService = {
       };
     }
 
-    const res = await SupabaseSyncService.deleteSaleInvoice(id);
+    const target = _inMemorySales.find((s) => s.id === id);
+    const compId = target?.companyId || DEFAULT_COMPANY_ID;
+    const res = await SupabaseSyncService.deleteSaleInvoice(id, compId);
     if (!res.success) {
       return {
         success: false,
@@ -1427,7 +1429,9 @@ export const StorageService = {
       };
     }
 
-    const res = await SupabaseSyncService.deletePurchaseInvoice(id);
+    const target = _inMemoryPurchases.find((p) => p.id === id);
+    const compId = target?.companyId || DEFAULT_COMPANY_ID;
+    const res = await SupabaseSyncService.deletePurchaseInvoice(id, compId);
     if (!res.success) {
       return {
         success: false,
@@ -2187,6 +2191,10 @@ export const StorageService = {
       return { success: false, error: syncRes.error || 'Database rejected PDC save.' };
     }
 
+    if (syncRes.data?.id) {
+      pdcToSave.id = syncRes.data.id;
+    }
+
     const idx = _inMemoryPdcs.findIndex((p) => p.id === pdcToSave.id);
     if (idx !== -1) {
       _inMemoryPdcs[idx] = pdcToSave;
@@ -2435,11 +2443,61 @@ export const StorageService = {
     return { success: true };
   },
 
-  async deletePdcAsync(id: string): Promise<{ success: boolean; error?: string }> {
+  async updatePdcAsync(
+    id: string,
+    pdcData: Partial<PdcTransaction>,
+    companyId?: string
+  ): Promise<{ success: boolean; data?: PdcTransaction; error?: string }> {
+    if (!checkOnline()) {
+      return { success: false, error: 'Internet connection required to update PDC.' };
+    }
+    const existing = _inMemoryPdcs.find((p) => p.id === id);
+    if (!existing) return { success: false, error: 'PDC record not found.' };
+
+    if (existing.status === 'CLEARED') {
+      return { success: false, error: 'Cannot edit a CLEARED cheque. Bounced/reversal journal entries exist.' };
+    }
+
+    const reqId = generateUniqueRequestId('pdc_upd');
+    const syncRes = await SupabaseSyncService.updatePdcRpc(
+      {
+        ...existing,
+        ...pdcData,
+        id,
+        companyId: companyId || existing.companyId || DEFAULT_COMPANY_ID
+      },
+      reqId
+    );
+
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Database rejected PDC update.' };
+    }
+
+    const updatedPdc: PdcTransaction = {
+      ...existing,
+      ...pdcData,
+      id,
+      updatedAt: new Date().toISOString()
+    };
+
+    const idx = _inMemoryPdcs.findIndex((p) => p.id === id);
+    if (idx !== -1) {
+      _inMemoryPdcs[idx] = updatedPdc;
+    }
+
+    return { success: true, data: updatedPdc };
+  },
+
+  async deletePdcAsync(id: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     if (!checkOnline()) {
       return { success: false, error: 'Internet connection required to delete PDC.' };
     }
-    const syncRes = await SupabaseSyncService.deletePdc(id);
+    const pdc = _inMemoryPdcs.find((p) => p.id === id);
+    if (pdc && pdc.status === 'CLEARED') {
+      return { success: false, error: 'Cannot delete a CLEARED cheque. Reverse or bounce it first to maintain accounting integrity.' };
+    }
+    const compId = companyId || pdc?.companyId || DEFAULT_COMPANY_ID;
+    const syncRes = await SupabaseSyncService.deletePdc(id, compId);
     if (!syncRes.success) {
       return { success: false, error: syncRes.error || 'Failed to delete PDC from database.' };
     }

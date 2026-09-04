@@ -239,7 +239,7 @@ export const PdcManagement: React.FC<PdcManagementProps> = ({
   const handleDelete = async (id: string) => {
     if (!window.confirm('Are you sure you want to delete this PDC record?')) return;
     try {
-      const res = await StorageService.deletePdcAsync(id);
+      const res = await StorageService.deletePdcAsync(id, company?.id || 'comp-1');
       if (res.success) {
         onSuccess('PDC record deleted successfully.');
         onRefresh();
