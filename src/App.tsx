@@ -176,6 +176,8 @@ function AppMain() {
   const handleLogout = () => {
     AuthService.logout();
     setSession(null);
+    setCurrentPage('dashboard');
+    setHistory(['dashboard']);
     addToast('info', 'Logged out successfully.');
   };
 
@@ -190,8 +192,9 @@ function AppMain() {
     if (page === currentPage) return;
 
     // Guard page navigation if session exists
-    if (session && page !== 'dashboard' && page !== 'settings' && page !== 'users') {
-      const canView = checkPermission(session.effectivePermissions, page as any, 'view');
+    if (session && page !== 'dashboard' && page !== 'users') {
+      const targetModule = page === 'settings' ? 'settings' : page;
+      const canView = checkPermission(session.effectivePermissions, targetModule as any, 'view');
       if (!canView) {
         addToast('error', `Access Denied: Your account does not have permission to view ${page}.`);
         return;
@@ -324,8 +327,15 @@ function AppMain() {
       }
       if (refreshTimeout) clearTimeout(refreshTimeout);
       refreshTimeout = setTimeout(() => {
-        if (session?.company?.id) {
-          refreshAllStates(session.company.id);
+        const currentStoredSession = AuthService.getCurrentSession();
+        if (!currentStoredSession) {
+           setSession(null);
+           setCurrentPage('dashboard');
+        } else {
+           setSession(currentStoredSession);
+           if (currentStoredSession.company?.id) {
+             refreshAllStates(currentStoredSession.company.id);
+           }
         }
       }, 100);
     };

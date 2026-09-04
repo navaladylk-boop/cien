@@ -465,7 +465,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
                     </div>
                   )}
 
-                  <form onSubmit={handleLogin} className="space-y-4">
+                  <form onSubmit={handleLogin} className="space-y-4" autoComplete="off">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
                         User ID / Username
@@ -476,7 +476,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
                           type="text"
                           required
                           autoFocus
-                          autoComplete="username"
+                          autoComplete="off"
                           placeholder="e.g. admin or sales01"
                           value={username}
                           onChange={(e) => setUsername(e.target.value)}
@@ -507,7 +507,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
                         <input
                           type={showPassword ? 'text' : 'password'}
                           required
-                          autoComplete="current-password"
+                          autoComplete="new-password"
                           placeholder="Enter your password"
                           value={password}
                           onChange={(e) => setPassword(e.target.value)}
