@@ -133,6 +133,16 @@ export const Purchases: React.FC<PurchasesProps> = ({
     if (name) {
       setCustomSupplierName(name);
     }
+    if (id) {
+      if (!editingPurchase) {
+        setPurchaseType('CREDIT');
+        setPaidAmountInput('0');
+      }
+    } else {
+      if (!editingPurchase) {
+        setPurchaseType('CASH');
+      }
+    }
     setTimeout(() => {
       const firstProductInput = document.getElementById('purchase-product-search-0') as HTMLInputElement | null;
       if (firstProductInput) {

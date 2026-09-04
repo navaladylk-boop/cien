@@ -1218,12 +1218,13 @@ export const StorageService = {
     };
   },
 
-  async deleteSaleReturnAsync(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
+  async deleteSaleReturnAsync(id: string, companyId?: string): Promise<{ success: boolean; message?: string; error?: string }> {
     if (!checkOnline()) return { success: false, error: 'Internet connection is required. The sales return was not deleted.' };
     const creds = getActiveSupabaseCredentials();
     if (!creds.url || !creds.key) return { success: false, error: 'Supabase database is not configured.' };
 
-    const syncRes = await SupabaseSyncService.deleteSaleReturn(id);
+    const compId = companyId || _inMemorySaleReturns.find((sr) => sr.id === id)?.companyId || DEFAULT_COMPANY_ID;
+    const syncRes = await SupabaseSyncService.deleteSaleReturn(id, compId);
     if (!syncRes.success) {
       return { success: false, error: syncRes.error || 'Failed to delete sales return in database.' };
     }
@@ -1531,12 +1532,13 @@ export const StorageService = {
     };
   },
 
-  async deletePurchaseReturnAsync(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
+  async deletePurchaseReturnAsync(id: string, companyId?: string): Promise<{ success: boolean; message?: string; error?: string }> {
     if (!checkOnline()) return { success: false, error: 'Internet connection is required. The purchase return was not deleted.' };
     const creds = getActiveSupabaseCredentials();
     if (!creds.url || !creds.key) return { success: false, error: 'Supabase database is not configured.' };
 
-    const syncRes = await SupabaseSyncService.deletePurchaseReturn(id);
+    const compId = companyId || _inMemoryPurchaseReturns.find((pr) => pr.id === id)?.companyId || DEFAULT_COMPANY_ID;
+    const syncRes = await SupabaseSyncService.deletePurchaseReturn(id, compId);
     if (!syncRes.success) {
       return { success: false, error: syncRes.error || 'Failed to delete purchase return in database.' };
     }
@@ -1684,7 +1686,7 @@ export const StorageService = {
     };
   },
 
-  async deleteCustomerReceiptAsync(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
+  async deleteCustomerReceiptAsync(id: string, companyId?: string): Promise<{ success: boolean; message?: string; error?: string }> {
     if (!checkOnline()) {
       return {
         success: false,
@@ -1700,7 +1702,8 @@ export const StorageService = {
       };
     }
 
-    const res = await SupabaseSyncService.deleteReceipt(id);
+    const compId = companyId || _inMemoryReceipts.find((r) => r.id === id)?.companyId || DEFAULT_COMPANY_ID;
+    const res = await SupabaseSyncService.deleteReceipt(id, compId);
     if (!res.success) {
       return {
         success: false,
@@ -1856,7 +1859,7 @@ export const StorageService = {
     };
   },
 
-  async deleteSupplierPaymentAsync(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
+  async deleteSupplierPaymentAsync(id: string, companyId?: string): Promise<{ success: boolean; message?: string; error?: string }> {
     if (!checkOnline()) {
       return {
         success: false,
@@ -1872,7 +1875,8 @@ export const StorageService = {
       };
     }
 
-    const res = await SupabaseSyncService.deletePayment(id);
+    const compId = companyId || _inMemoryPayments.find((p) => p.id === id)?.companyId || DEFAULT_COMPANY_ID;
+    const res = await SupabaseSyncService.deletePayment(id, compId);
     if (!res.success) {
       return {
         success: false,

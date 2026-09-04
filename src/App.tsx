@@ -15,6 +15,8 @@ import {
   CustomerReceipt,
   SupplierPayment,
   Expense,
+  SaleReturn,
+  PurchaseReturn,
   AppSettings,
   Company,
   PageType,
@@ -147,6 +149,8 @@ function AppMain() {
   const [receipts, setReceipts] = useState<CustomerReceipt[]>(() => StorageService.getReceipts());
   const [payments, setPayments] = useState<SupplierPayment[]>(() => StorageService.getPayments());
   const [expenses, setExpenses] = useState<Expense[]>(() => StorageService.getExpenses());
+  const [saleReturns, setSaleReturns] = useState<SaleReturn[]>(() => StorageService.getSaleReturns());
+  const [purchaseReturns, setPurchaseReturns] = useState<PurchaseReturn[]>(() => StorageService.getPurchaseReturns());
   const [pdcs, setPdcs] = useState<PdcTransaction[]>(() => StorageService.getPdcs());
 
   // Print Invoice Modal State
@@ -250,6 +254,8 @@ function AppMain() {
     setReceipts(StorageService.getReceipts(activeCompId));
     setPayments(StorageService.getPayments(activeCompId));
     setExpenses(StorageService.getExpenses(activeCompId));
+    setSaleReturns(StorageService.getSaleReturns(activeCompId));
+    setPurchaseReturns(StorageService.getPurchaseReturns(activeCompId));
     setPdcs(StorageService.getPdcs(activeCompId));
     refreshSession();
   };
@@ -827,6 +833,7 @@ function AppMain() {
               settings={settings}
               sales={sales}
               receipts={receipts}
+              saleReturns={saleReturns}
               onSaveCustomer={handleSaveCustomer}
               onDeleteCustomer={handleDeleteCustomer}
               session={session}
@@ -839,6 +846,7 @@ function AppMain() {
               settings={settings}
               purchases={purchases}
               payments={payments}
+              purchaseReturns={purchaseReturns}
               onSaveSupplier={handleSaveSupplier}
               onDeleteSupplier={handleDeleteSupplier}
               session={session}

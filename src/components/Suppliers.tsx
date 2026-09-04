@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Plus,
   Search,
@@ -12,9 +12,15 @@ import {
   Building,
   X,
   AlertCircle,
-  Printer
+  Printer,
+  Calendar,
+  CheckCircle2,
+  Clock,
+  ArrowUpRight,
+  ArrowDownLeft,
+  RefreshCw
 } from 'lucide-react';
-import { Supplier, AppSettings, PurchaseInvoice, SupplierPayment, AuthSession } from '../types';
+import { Supplier, AppSettings, PurchaseInvoice, SupplierPayment, PurchaseReturn, AuthSession } from '../types';
 import { checkPermission } from '../lib/permissions';
 import { STANDARD_ACCOUNT_GROUPS } from '../lib/accountGroups';
 
@@ -23,6 +29,7 @@ interface SuppliersProps {
   settings: AppSettings;
   purchases: PurchaseInvoice[];
   payments: SupplierPayment[];
+  purchaseReturns?: PurchaseReturn[];
   onSaveSupplier: (supplier: Partial<Supplier>) => void;
   onDeleteSupplier: (id: string) => void;
   session?: AuthSession | null;
@@ -33,6 +40,7 @@ export const Suppliers: React.FC<SuppliersProps> = ({
   settings,
   purchases,
   payments,
+  purchaseReturns,
   onSaveSupplier,
   onDeleteSupplier,
   session
@@ -43,10 +51,141 @@ export const Suppliers: React.FC<SuppliersProps> = ({
   const [editingSupplier, setEditingSupplier] = useState<Partial<Supplier> | null>(null);
   const [selectedLedgerSupplier, setSelectedLedgerSupplier] = useState<Supplier | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [statementStartDate, setStatementStartDate] = useState<string>('');
+  const [statementEndDate, setStatementEndDate] = useState<string>('');
 
   const canAdd = checkPermission(session?.effectivePermissions, 'suppliers', 'add');
   const canEdit = checkPermission(session?.effectivePermissions, 'suppliers', 'edit');
   const canDelete = checkPermission(session?.effectivePermissions, 'suppliers', 'delete');
+
+  // Supplier Statement Ledger Calculation (Multi-Company Isolated & Chronologically Consistent)
+  const supplierStatementData = useMemo(() => {
+    if (!selectedLedgerSupplier) return null;
+
+    const suppCompId = selectedLedgerSupplier.companyId || 'comp-1';
+    const openingBal = Number(selectedLedgerSupplier.openingBalance || 0);
+
+    // 1. Filter transactions strictly by supplierId AND companyId
+    const suppPurchases = purchases.filter(
+      (p) => p.supplierId === selectedLedgerSupplier.id && (!selectedLedgerSupplier.companyId || (p.companyId || 'comp-1') === suppCompId)
+    );
+    const suppPayments = payments.filter(
+      (pm) => pm.supplierId === selectedLedgerSupplier.id && (!selectedLedgerSupplier.companyId || (pm.companyId || 'comp-1') === suppCompId)
+    );
+    const suppReturns = (purchaseReturns || []).filter(
+      (pr) => pr.supplierId === selectedLedgerSupplier.id && (!selectedLedgerSupplier.companyId || (pr.companyId || 'comp-1') === suppCompId)
+    );
+
+    // 2. Build uniform ledger items
+    interface RawLedgerItem {
+      id: string;
+      date: string;
+      createdAt: string;
+      type: 'PURCHASE' | 'PAYMENT' | 'RETURN';
+      typeLabel: string;
+      voucherNo: string;
+      particulars: string;
+      billedAmount: number;
+      paidAmount: number;
+      returnAmount: number;
+      paymentMode?: string;
+    }
+
+    const rawItems: RawLedgerItem[] = [];
+
+    suppPurchases.forEach((p) => {
+      rawItems.push({
+        id: p.id,
+        date: p.date || (p as any).purchaseDate || '',
+        createdAt: p.createdAt || p.date || '',
+        type: 'PURCHASE',
+        typeLabel: `PURCHASE (${p.type || 'CREDIT'})`,
+        voucherNo: p.purchaseNumber || 'PUR-BILL',
+        particulars: p.notes ? `Purchase Bill - ${p.notes}` : `Purchase Bill (${p.items?.length || 0} items)`,
+        billedAmount: Number(p.grandTotal || 0),
+        paidAmount: 0,
+        returnAmount: 0
+      });
+    });
+
+    suppPayments.forEach((pm) => {
+      rawItems.push({
+        id: pm.id,
+        date: pm.date || (pm as any).paymentDate || '',
+        createdAt: pm.createdAt || pm.date || '',
+        type: 'PAYMENT',
+        typeLabel: `PAYMENT (${pm.paymentMode || (pm as any).paymentMethod || 'CASH'})`,
+        voucherNo: pm.paymentNumber || 'PAY-VCHR',
+        particulars: pm.referenceNo ? `Payment Ref: ${pm.referenceNo} ${pm.notes || ''}` : `Supplier Payment ${pm.notes || ''}`,
+        billedAmount: 0,
+        paidAmount: Number(pm.amount || 0),
+        returnAmount: 0,
+        paymentMode: pm.paymentMode || (pm as any).paymentMethod
+      });
+    });
+
+    suppReturns.forEach((pr) => {
+      rawItems.push({
+        id: pr.id,
+        date: pr.date || '',
+        createdAt: pr.createdAt || pr.date || '',
+        type: 'RETURN',
+        typeLabel: 'PURCHASE RETURN',
+        voucherNo: pr.returnNumber || 'PR-RET',
+        particulars: pr.reason ? `Debit Note / Return - ${pr.reason}` : 'Purchase Return / Debit Note',
+        billedAmount: 0,
+        paidAmount: 0,
+        returnAmount: Number(pr.grandTotal || 0)
+      });
+    });
+
+    // 3. Sort chronologically by date ascending, then createdAt ascending
+    rawItems.sort((a, b) => {
+      const dateCmp = (a.date || '').localeCompare(b.date || '');
+      if (dateCmp !== 0) return dateCmp;
+      return (a.createdAt || '').localeCompare(b.createdAt || '');
+    });
+
+    // 4. Calculate running balances
+    let runningBalance = openingBal;
+    const allCalculatedEntries = rawItems.map((item) => {
+      // Net balance change: + Billed - Paid - Return
+      const netChange = item.billedAmount - item.paidAmount - item.returnAmount;
+      runningBalance = Number((runningBalance + netChange).toFixed(2));
+      return {
+        ...item,
+        netChange,
+        runningBalance
+      };
+    });
+
+    // 5. Total aggregations
+    const totalBilled = rawItems.reduce((sum, item) => sum + item.billedAmount, 0);
+    const totalPaid = rawItems.reduce((sum, item) => sum + item.paidAmount, 0);
+    const totalReturns = rawItems.reduce((sum, item) => sum + item.returnAmount, 0);
+    const finalCalculatedBalance = runningBalance;
+    const storedBalance = Number(selectedLedgerSupplier.payableBalance || 0);
+
+    // 6. Apply optional date filter to the displayed rows
+    const displayedEntries = allCalculatedEntries.filter((item) => {
+      if (statementStartDate && item.date < statementStartDate) return false;
+      if (statementEndDate && item.date > statementEndDate) return false;
+      return true;
+    });
+
+    return {
+      openingBalance: openingBal,
+      totalBilled,
+      totalPaid,
+      totalReturns,
+      finalCalculatedBalance,
+      storedBalance,
+      isReconciled: Math.abs(finalCalculatedBalance - storedBalance) < 0.01,
+      variance: Number((storedBalance - finalCalculatedBalance).toFixed(2)),
+      entries: displayedEntries,
+      totalEntriesCount: allCalculatedEntries.length
+    };
+  }, [selectedLedgerSupplier, purchases, payments, purchaseReturns, statementStartDate, statementEndDate]);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -146,11 +285,36 @@ export const Suppliers: React.FC<SuppliersProps> = ({
     setIsModalOpen(false);
   };
 
+  // Dynamic accurate ledger balance for every supplier
+  const supplierCalculatedBalances = useMemo(() => {
+    const map = new Map<string, number>();
+    suppliers.forEach((s) => {
+      const suppCompId = s.companyId || 'comp-1';
+      const suppPurchases = purchases.filter(
+        (p) => p.supplierId === s.id && (!s.companyId || (p.companyId || 'comp-1') === suppCompId)
+      );
+      const suppPayments = payments.filter(
+        (pm) => pm.supplierId === s.id && (!s.companyId || (pm.companyId || 'comp-1') === suppCompId)
+      );
+      const suppReturns = (purchaseReturns || []).filter(
+        (pr) => pr.supplierId === s.id && (!s.companyId || (pr.companyId || 'comp-1') === suppCompId)
+      );
+
+      const totalBilled = suppPurchases.reduce((sum, p) => sum + Number(p.grandTotal || 0), 0);
+      const totalPaid = suppPayments.reduce((sum, pm) => sum + Number(pm.amount || 0), 0);
+      const totalReturns = suppReturns.reduce((sum, pr) => sum + Number(pr.grandTotal || 0), 0);
+      const calculatedBal = Number((Number(s.openingBalance || 0) + totalBilled - totalPaid - totalReturns).toFixed(2));
+      map.set(s.id, calculatedBal);
+    });
+    return map;
+  }, [suppliers, purchases, payments, purchaseReturns]);
+
   // Filtered suppliers
   const filteredSuppliers = suppliers.filter((s) => {
     const q = searchTerm.toLowerCase().trim();
+    const currentPayable = supplierCalculatedBalances.get(s.id) ?? s.payableBalance;
     if (!q) {
-      return onlyPayable ? s.payableBalance > 0 : true;
+      return onlyPayable ? currentPayable > 0 : true;
     }
     const terms = q.split(/\s+/).filter(Boolean);
     const matchesQuery = terms.every((t) =>
@@ -159,10 +323,10 @@ export const Suppliers: React.FC<SuppliersProps> = ({
         .toLowerCase()
         .includes(t)
     );
-    return matchesQuery && (onlyPayable ? s.payableBalance > 0 : true);
+    return matchesQuery && (onlyPayable ? currentPayable > 0 : true);
   });
 
-  const totalPayable = suppliers.reduce((sum, s) => sum + s.payableBalance, 0);
+  const totalPayable = suppliers.reduce((sum, s) => sum + (supplierCalculatedBalances.get(s.id) ?? s.payableBalance), 0);
 
   return (
     <div className="space-y-6 pb-8">
@@ -253,10 +417,10 @@ export const Suppliers: React.FC<SuppliersProps> = ({
                     <span className="text-[10px] font-bold text-slate-400 uppercase block">Payable</span>
                     <span
                       className={`font-mono font-extrabold text-sm ${
-                        supp.payableBalance > 0 ? 'text-rose-600' : 'text-emerald-600'
+                        (supplierCalculatedBalances.get(supp.id) ?? supp.payableBalance) > 0 ? 'text-rose-600' : 'text-emerald-600'
                       }`}
                     >
-                      {settings.currencySymbol} {supp.payableBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      {settings.currencySymbol} {(supplierCalculatedBalances.get(supp.id) ?? supp.payableBalance).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                     </span>
                   </div>
                 </div>
@@ -504,129 +668,250 @@ export const Suppliers: React.FC<SuppliersProps> = ({
       )}
 
       {/* Supplier Bills History / Statement Modal */}
-      {selectedLedgerSupplier && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full p-6 animate-in fade-in zoom-in-95 max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+      {selectedLedgerSupplier && supplierStatementData && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full p-4 sm:p-6 animate-in fade-in zoom-in-95 max-h-[92vh] flex flex-col">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-3">
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h3 className="font-bold text-lg text-slate-900">
                     {selectedLedgerSupplier.name}
                   </h3>
                   <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-xs font-mono font-bold rounded-md">
                     {selectedLedgerSupplier.code}
                   </span>
+                  {selectedLedgerSupplier.accountGroup && (
+                    <span className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-md">
+                      {selectedLedgerSupplier.accountGroup}
+                    </span>
+                  )}
                 </div>
-                <p className="text-xs text-slate-500">
-                  {selectedLedgerSupplier.companyName || 'Vendor Purchase Statement'} • Phone: {selectedLedgerSupplier.phone}
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {selectedLedgerSupplier.companyName ? `${selectedLedgerSupplier.companyName} • ` : ''}
+                  Phone: {selectedLedgerSupplier.phone} {selectedLedgerSupplier.address ? `• ${selectedLedgerSupplier.address}` : ''}
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 self-end sm:self-auto">
                 <button
                   onClick={() => window.print()}
-                  className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer font-bold text-xs"
                   title="Print Statement"
                 >
                   <Printer className="w-4 h-4" />
+                  <span>Print</span>
                 </button>
                 <button
-                  onClick={() => setSelectedLedgerSupplier(null)}
-                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                  onClick={() => {
+                    setSelectedLedgerSupplier(null);
+                    setStatementStartDate('');
+                    setStatementEndDate('');
+                  }}
+                  className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            <div className="py-4 grid grid-cols-3 gap-3">
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+            {/* Date Range Filter Toolbar */}
+            <div className="py-2.5 px-3 my-2 bg-slate-50 rounded-xl border border-slate-200/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-bold text-slate-600 flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-slate-500" />
+                  Period:
+                </span>
+                <input
+                  type="date"
+                  value={statementStartDate}
+                  onChange={(e) => setStatementStartDate(e.target.value)}
+                  className="px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs text-slate-800 font-medium"
+                  placeholder="From"
+                />
+                <span className="text-slate-400">to</span>
+                <input
+                  type="date"
+                  value={statementEndDate}
+                  onChange={(e) => setStatementEndDate(e.target.value)}
+                  className="px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs text-slate-800 font-medium"
+                  placeholder="To"
+                />
+                {(statementStartDate || statementEndDate) && (
+                  <button
+                    onClick={() => {
+                      setStatementStartDate('');
+                      setStatementEndDate('');
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-semibold underline cursor-pointer ml-1"
+                  >
+                    Reset Filter
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {supplierStatementData.isReconciled ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 px-2.5 py-0.5 rounded-md">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                    Ledger Reconciled
+                  </span>
+                ) : (
+                  <>
+                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-100/80 px-2.5 py-0.5 rounded-md" title={`Stored Balance: ${supplierStatementData.storedBalance.toFixed(2)} | Calculated: ${supplierStatementData.finalCalculatedBalance.toFixed(2)}`}>
+                      <AlertCircle className="w-3 h-3 text-amber-600" />
+                      Variance: {settings.currencySymbol} {Math.abs(supplierStatementData.variance).toFixed(2)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSaveSupplier({
+                          ...selectedLedgerSupplier,
+                          payableBalance: supplierStatementData.finalCalculatedBalance
+                        });
+                        setSelectedLedgerSupplier({
+                          ...selectedLedgerSupplier,
+                          payableBalance: supplierStatementData.finalCalculatedBalance
+                        });
+                      }}
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-amber-600 hover:bg-amber-700 px-2.5 py-0.5 rounded-md shadow-xs transition-colors cursor-pointer"
+                      title="Update stored database balance to match exact ledger transactions"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Sync Balance ({settings.currencySymbol} {supplierStatementData.finalCalculatedBalance.toFixed(2)})</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Financial Summary KPIs */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 mb-2">
+              <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
                 <span className="text-[10px] text-slate-500 font-bold uppercase block">
                   Opening Balance
                 </span>
                 <span className="text-sm font-mono font-bold text-slate-800">
-                  {settings.currencySymbol} {(selectedLedgerSupplier.openingBalance || 0).toFixed(2)}
+                  {settings.currencySymbol} {supplierStatementData.openingBalance.toFixed(2)}
                 </span>
               </div>
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                <span className="text-[10px] text-slate-500 font-bold uppercase block">
-                  Total Purchases
+              <div className="bg-blue-50/60 p-2.5 rounded-xl border border-blue-100">
+                <span className="text-[10px] text-blue-700 font-bold uppercase block">
+                  (+) Total Billed
                 </span>
-                <span className="text-sm font-mono font-bold text-slate-800">
-                  {settings.currencySymbol}{' '}
-                  {purchases
-                    .filter((p) => p.supplierId === selectedLedgerSupplier.id)
-                    .reduce((sum, p) => sum + p.grandTotal, 0)
-                    .toFixed(2)}
+                <span className="text-sm font-mono font-bold text-blue-900">
+                  {settings.currencySymbol} {supplierStatementData.totalBilled.toFixed(2)}
                 </span>
               </div>
-              <div className="bg-rose-50 p-3 rounded-xl border border-rose-200">
-                <span className="text-[10px] text-rose-600 font-bold uppercase block">
-                  Current Payable
+              <div className="bg-emerald-50/60 p-2.5 rounded-xl border border-emerald-100">
+                <span className="text-[10px] text-emerald-700 font-bold uppercase block">
+                  (-) Total Paid
                 </span>
-                <span className="text-sm font-mono font-black text-rose-700">
-                  {settings.currencySymbol} {(selectedLedgerSupplier.payableBalance || 0).toFixed(2)}
+                <span className="text-sm font-mono font-bold text-emerald-900">
+                  {settings.currencySymbol} {supplierStatementData.totalPaid.toFixed(2)}
+                </span>
+              </div>
+              <div className="bg-purple-50/60 p-2.5 rounded-xl border border-purple-100">
+                <span className="text-[10px] text-purple-700 font-bold uppercase block">
+                  (-) Debit Returns
+                </span>
+                <span className="text-sm font-mono font-bold text-purple-900">
+                  {settings.currencySymbol} {supplierStatementData.totalReturns.toFixed(2)}
+                </span>
+              </div>
+              <div className="col-span-2 sm:col-span-1 bg-rose-50 p-2.5 rounded-xl border border-rose-200">
+                <span className="text-[10px] text-rose-700 font-bold uppercase block">
+                  (=) Net Payable
+                </span>
+                <span className="text-sm font-mono font-black text-rose-900">
+                  {settings.currencySymbol} {supplierStatementData.finalCalculatedBalance.toFixed(2)}
                 </span>
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto mt-2 border border-slate-100 rounded-xl">
+            {/* Chronological Statement Table */}
+            <div className="flex-1 overflow-y-auto border border-slate-200 rounded-xl">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-500 uppercase font-bold sticky top-0 border-b border-slate-200">
+                <thead className="bg-slate-100/80 text-slate-600 uppercase font-bold sticky top-0 border-b border-slate-200 z-10 text-[11px]">
                   <tr>
-                    <th className="p-3">Date</th>
-                    <th className="p-3">Ref No</th>
-                    <th className="p-3">Type</th>
-                    <th className="p-3 text-right">Billed Amount</th>
-                    <th className="p-3 text-right">Paid Amount</th>
+                    <th className="p-2.5">Date</th>
+                    <th className="p-2.5">Voucher / Ref</th>
+                    <th className="p-2.5">Particulars</th>
+                    <th className="p-2.5 text-right">Billed (+Dr)</th>
+                    <th className="p-2.5 text-right">Paid/Ret (-Cr)</th>
+                    <th className="p-2.5 text-right">Running Payable</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-mono">
-                  {purchases
-                    .filter((p) => p.supplierId === selectedLedgerSupplier.id)
-                    .map((p) => (
-                      <tr key={p.id} className="hover:bg-slate-50/50">
-                        <td className="p-3 text-slate-600">{p.purchaseDate}</td>
-                        <td className="p-3 font-bold text-blue-600">{p.purchaseNumber}</td>
-                        <td className="p-3">
-                          <span className="px-1.5 py-0.5 rounded-sm text-[10px] font-bold bg-amber-50 text-amber-700">
-                            PURCHASE
-                          </span>
-                        </td>
-                        <td className="p-3 text-right font-bold text-slate-800">
-                          {p.grandTotal.toFixed(2)}
-                        </td>
-                        <td className="p-3 text-right text-emerald-600 font-bold">
-                          {p.paidAmount.toFixed(2)}
-                        </td>
-                      </tr>
-                    ))}
+                  {/* Opening Balance Line */}
+                  <tr className="bg-slate-50/60 font-semibold">
+                    <td className="p-2.5 text-slate-500">-</td>
+                    <td className="p-2.5 text-slate-500">OB-000</td>
+                    <td className="p-2.5 font-sans text-slate-700">Opening Ledger Balance</td>
+                    <td className="p-2.5 text-right text-slate-700">{supplierStatementData.openingBalance.toFixed(2)}</td>
+                    <td className="p-2.5 text-right text-slate-400">0.00</td>
+                    <td className="p-2.5 text-right font-bold text-slate-800">{supplierStatementData.openingBalance.toFixed(2)}</td>
+                  </tr>
 
-                  {payments
-                    .filter((pm) => pm.supplierId === selectedLedgerSupplier.id)
-                    .map((pm) => (
-                      <tr key={pm.id} className="hover:bg-slate-50/50 bg-emerald-50/20">
-                        <td className="p-3 text-slate-600">{pm.paymentDate}</td>
-                        <td className="p-3 font-bold text-emerald-700">{pm.paymentNumber}</td>
-                        <td className="p-3">
-                          <span className="px-1.5 py-0.5 rounded-sm text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                            PAYMENT ({pm.paymentMethod})
-                          </span>
+                  {supplierStatementData.entries.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="p-6 text-center text-slate-400 font-sans italic">
+                        No transactions recorded for this supplier within the selected period.
+                      </td>
+                    </tr>
+                  ) : (
+                    supplierStatementData.entries.map((entry) => (
+                      <tr key={entry.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="p-2.5 text-slate-600 whitespace-nowrap">{entry.date}</td>
+                        <td className="p-2.5 font-bold text-blue-700 whitespace-nowrap">{entry.voucherNo}</td>
+                        <td className="p-2.5 font-sans text-slate-800">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              entry.type === 'PURCHASE' ? 'bg-amber-100 text-amber-800' :
+                              entry.type === 'PAYMENT' ? 'bg-emerald-100 text-emerald-800' :
+                              'bg-purple-100 text-purple-800'
+                            }`}>
+                              {entry.typeLabel}
+                            </span>
+                            <span className="text-xs text-slate-600">{entry.particulars}</span>
+                          </div>
                         </td>
-                        <td className="p-3 text-right text-slate-400">-</td>
-                        <td className="p-3 text-right font-bold text-emerald-700">
-                          {pm.amount.toFixed(2)}
+                        <td className="p-2.5 text-right font-bold text-slate-900">
+                          {entry.billedAmount > 0 ? entry.billedAmount.toFixed(2) : '-'}
+                        </td>
+                        <td className="p-2.5 text-right font-bold text-emerald-700">
+                          {entry.paidAmount > 0 ? entry.paidAmount.toFixed(2) : entry.returnAmount > 0 ? entry.returnAmount.toFixed(2) : '-'}
+                        </td>
+                        <td className="p-2.5 text-right font-bold text-slate-900 bg-slate-50/30">
+                          {entry.runningBalance.toFixed(2)}
                         </td>
                       </tr>
-                    ))}
+                    ))
+                  )}
                 </tbody>
+                <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-200 text-[11px] sticky bottom-0">
+                  <tr>
+                    <td colSpan={3} className="p-2.5 text-slate-700 font-sans uppercase">Total Summary (Period)</td>
+                    <td className="p-2.5 text-right font-mono text-slate-900">{supplierStatementData.totalBilled.toFixed(2)}</td>
+                    <td className="p-2.5 text-right font-mono text-emerald-800">{(supplierStatementData.totalPaid + supplierStatementData.totalReturns).toFixed(2)}</td>
+                    <td className="p-2.5 text-right font-mono text-rose-900">{supplierStatementData.finalCalculatedBalance.toFixed(2)}</td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
 
-            <div className="pt-4 mt-2 flex justify-end">
+            {/* Footer */}
+            <div className="pt-3 mt-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-slate-100">
+              <span className="text-xs text-slate-500">
+                Showing {supplierStatementData.entries.length} of {supplierStatementData.totalEntriesCount} transactional records
+              </span>
               <button
-                onClick={() => setSelectedLedgerSupplier(null)}
-                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+                onClick={() => {
+                  setSelectedLedgerSupplier(null);
+                  setStatementStartDate('');
+                  setStatementEndDate('');
+                }}
+                className="px-4 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs self-end"
               >
                 Close Statement
               </button>

@@ -1001,45 +1001,40 @@ export const SupabaseSyncService = {
   async deleteSaleInvoice(invoiceId: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = `req_void_sale_${invoiceId}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'A void operation for this sale is already in progress.' };
+    }
+    _inFlightRequests.add(reqId);
+
     try {
       const compId = companyId || 'comp-1';
-      // First invoke atomic void_sale_invoice_rpc for safe inventory & customer balance reversal
+      // Authoritative atomic void_sale_invoice_rpc handles inventory, customer balance, linked receipts, and journals
       const { data, error } = await client.rpc('void_sale_invoice_rpc', {
         p_invoice_id: invoiceId,
-        p_company_id: compId
+        p_company_id: compId,
+        p_request_id: reqId
       });
 
-      if (!error && data) {
-        if (typeof data === 'object' && data.success === false) {
-          return { success: false, error: data.error || 'Database rejected sale invoice voiding.' };
+      if (error) {
+        // Safe timeout recovery without direct table fallback
+        const recovery = await this.getTransactionByRequestId(reqId);
+        if (recovery && recovery.found) {
+          return { success: true };
         }
-        return { success: true };
-      }
-
-      if (error && !error.message?.includes('function') && !error.message?.includes('does not exist')) {
         return { success: false, error: error.message };
       }
 
-      // Safe fallback if void RPC is not yet registered in database
-      try {
-        await client.from('busy_ufo_sale_items').delete().eq('invoice_id', invoiceId);
-      } catch (err) {
-        console.warn('Warning deleting sale items child rows:', err);
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected sale invoice voiding.' };
       }
 
-      try {
-        await client.from('busy_ufo_customer_receipts').update({ invoice_id: null }).eq('invoice_id', invoiceId);
-      } catch (err) {
-        console.warn('Warning unlinking customer receipts:', err);
-      }
-
-      const { error: delErr } = await client.from('busy_ufo_sales').delete().eq('id', invoiceId);
-      if (delErr) {
-        return { success: false, error: delErr.message };
-      }
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
     }
   },
 
@@ -1200,45 +1195,40 @@ export const SupabaseSyncService = {
   async deletePurchaseInvoice(purchaseId: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = `req_void_pur_${purchaseId}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'A void operation for this purchase bill is already in progress.' };
+    }
+    _inFlightRequests.add(reqId);
+
     try {
       const compId = companyId || 'comp-1';
-      // First invoke atomic void_purchase_invoice_rpc for safe stock & supplier balance reversal
+      // Authoritative atomic void_purchase_invoice_rpc handles inventory, supplier balance, linked payments, and journals
       const { data, error } = await client.rpc('void_purchase_invoice_rpc', {
         p_purchase_id: purchaseId,
-        p_company_id: compId
+        p_company_id: compId,
+        p_request_id: reqId
       });
 
-      if (!error && data) {
-        if (typeof data === 'object' && data.success === false) {
-          return { success: false, error: data.error || 'Database rejected purchase invoice voiding.' };
+      if (error) {
+        // Safe timeout recovery without direct table fallback
+        const recovery = await this.getTransactionByRequestId(reqId);
+        if (recovery && recovery.found) {
+          return { success: true };
         }
-        return { success: true };
-      }
-
-      if (error && !error.message?.includes('function') && !error.message?.includes('does not exist')) {
         return { success: false, error: error.message };
       }
 
-      // Safe fallback if void RPC is not yet registered in database
-      try {
-        await client.from('busy_ufo_purchase_items').delete().eq('purchase_id', purchaseId);
-      } catch (err) {
-        console.warn('Warning deleting purchase items child rows:', err);
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected purchase invoice voiding.' };
       }
 
-      try {
-        await client.from('busy_ufo_supplier_payments').update({ purchase_id: null }).eq('purchase_id', purchaseId);
-      } catch (err) {
-        console.warn('Warning unlinking supplier payments:', err);
-      }
-
-      const { error: delErr } = await client.from('busy_ufo_purchases').delete().eq('id', purchaseId);
-      if (delErr) {
-        return { success: false, error: delErr.message };
-      }
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
     }
   },
 
@@ -1331,15 +1321,37 @@ export const SupabaseSyncService = {
     }
   },
 
-  async deleteSaleReturn(returnId: string): Promise<{ success: boolean; error?: string }> {
+  async deleteSaleReturn(returnId: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = `req_void_sr_${returnId}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'A void operation for this sales return is already in progress.' };
+    }
+    _inFlightRequests.add(reqId);
+
     try {
-      const { error } = await client.from('busy_ufo_sale_returns').delete().eq('id', returnId);
-      if (error) return { success: false, error: error.message };
+      const compId = companyId || 'comp-1';
+      const { data, error } = await client.rpc('void_sale_return_rpc', {
+        p_return_id: returnId,
+        p_company_id: compId,
+        p_request_id: reqId
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected sales return voiding.' };
+      }
+
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
     }
   },
 
@@ -1430,15 +1442,37 @@ export const SupabaseSyncService = {
     }
   },
 
-  async deletePurchaseReturn(returnId: string): Promise<{ success: boolean; error?: string }> {
+  async deletePurchaseReturn(returnId: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = `req_void_pr_${returnId}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'A void operation for this purchase return is already in progress.' };
+    }
+    _inFlightRequests.add(reqId);
+
     try {
-      const { error } = await client.from('busy_ufo_purchase_returns').delete().eq('id', returnId);
-      if (error) return { success: false, error: error.message };
+      const compId = companyId || 'comp-1';
+      const { data, error } = await client.rpc('void_purchase_return_rpc', {
+        p_return_id: returnId,
+        p_company_id: compId,
+        p_request_id: reqId
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected purchase return voiding.' };
+      }
+
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
     }
   },
 
@@ -1514,42 +1548,37 @@ export const SupabaseSyncService = {
     }
   },
 
-  async deleteReceipt(id: string): Promise<{ success: boolean; error?: string }> {
+  async deleteReceipt(id: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = `req_void_rec_${id}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'A void operation for this customer receipt is already in progress.' };
+    }
+    _inFlightRequests.add(reqId);
+
     try {
-      const { data: rec } = await client
-        .from('busy_ufo_customer_receipts')
-        .select('*')
-        .eq('id', id)
-        .maybeSingle();
+      const compId = companyId || 'comp-1';
+      const { data, error } = await client.rpc('void_customer_receipt_rpc', {
+        p_receipt_id: id,
+        p_company_id: compId,
+        p_request_id: reqId
+      });
 
-      if (rec && rec.customer_id && Number(rec.amount || 0) > 0) {
-        try {
-          const { data: cust } = await client
-            .from('busy_ufo_customers')
-            .select('current_balance')
-            .eq('id', rec.customer_id)
-            .maybeSingle();
-          if (cust) {
-            const restoredBal = Number(((cust.current_balance || 0) + Number(rec.amount || 0)).toFixed(2));
-            await client
-              .from('busy_ufo_customers')
-              .update({ current_balance: restoredBal, updated_at: new Date().toISOString() })
-              .eq('id', rec.customer_id);
-          }
-        } catch (err) {
-          console.warn('Could not restore customer balance on receipt delete:', err);
-        }
-      }
-
-      const { error } = await client.from('busy_ufo_customer_receipts').delete().eq('id', id);
       if (error) {
         return { success: false, error: error.message };
       }
+
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected customer receipt voiding.' };
+      }
+
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
     }
   },
 
@@ -1624,42 +1653,37 @@ export const SupabaseSyncService = {
     }
   },
 
-  async deletePayment(id: string): Promise<{ success: boolean; error?: string }> {
+  async deletePayment(id: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = `req_void_pay_${id}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'A void operation for this supplier payment is already in progress.' };
+    }
+    _inFlightRequests.add(reqId);
+
     try {
-      const { data: pay } = await client
-        .from('busy_ufo_supplier_payments')
-        .select('*')
-        .eq('id', id)
-        .maybeSingle();
+      const compId = companyId || 'comp-1';
+      const { data, error } = await client.rpc('void_supplier_payment_rpc', {
+        p_payment_id: id,
+        p_company_id: compId,
+        p_request_id: reqId
+      });
 
-      if (pay && pay.supplier_id && Number(pay.amount || 0) > 0) {
-        try {
-          const { data: sup } = await client
-            .from('busy_ufo_suppliers')
-            .select('current_balance')
-            .eq('id', pay.supplier_id)
-            .maybeSingle();
-          if (sup) {
-            const restoredBal = Number(((sup.current_balance || 0) + Number(pay.amount || 0)).toFixed(2));
-            await client
-              .from('busy_ufo_suppliers')
-              .update({ current_balance: restoredBal, updated_at: new Date().toISOString() })
-              .eq('id', pay.supplier_id);
-          }
-        } catch (err) {
-          console.warn('Could not restore supplier balance on payment delete:', err);
-        }
-      }
-
-      const { error } = await client.from('busy_ufo_supplier_payments').delete().eq('id', id);
       if (error) {
         return { success: false, error: error.message };
       }
+
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected supplier payment voiding.' };
+      }
+
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
     }
   },
 
@@ -2442,11 +2466,11 @@ export const SupabaseSyncService = {
     }
   },
 
-  async syncPdc(pdc: PdcTransaction): Promise<{ success: boolean; error?: string; isDuplicate?: boolean }> {
+  async syncPdc(pdc: PdcTransaction, isEdit: boolean = false): Promise<{ success: boolean; error?: string; isDuplicate?: boolean }> {
     // All PDC mutations strictly route to atomic RPCs
-    if (pdc.id) {
-      const res = await this.savePdcRpc(pdc);
-      return { success: res.success, error: res.error, isDuplicate: res.isDuplicate };
+    if (isEdit) {
+      const res = await this.updatePdcRpc(pdc);
+      return { success: res.success, error: res.error };
     }
     return this.savePdcRpc(pdc);
   },
@@ -2454,26 +2478,25 @@ export const SupabaseSyncService = {
   async deletePdc(id: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = `req_void_pdc_${id}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'A void operation for this PDC is already in progress.' };
+    }
+    _inFlightRequests.add(reqId);
+
     try {
       const compId = companyId || 'comp-1';
-      // First try atomic delete_pdc_rpc
-      const { data, error } = await client.rpc('delete_pdc_rpc', {
+      // Execute atomic void_pdc_rpc
+      const { data, error } = await client.rpc('void_pdc_rpc', {
         p_pdc_id: id,
-        p_company_id: compId
+        p_company_id: compId,
+        p_request_id: reqId,
+        p_reason: 'User deleted PDC'
       });
 
       if (error) {
-        // If RPC function is not yet deployed, enforce strict safety checks
-        const { data: existing } = await client.from('busy_ufo_pdcs').select('status, linked_journal_id').eq('id', id).maybeSingle();
-        if (existing?.status === 'CLEARED') {
-          return { success: false, error: 'Cannot delete a CLEARED cheque. Bounced/reversal journal entries exist. Reverse the transaction first to maintain accounting integrity.' };
-        }
-        if (existing?.linked_journal_id) {
-          return { success: false, error: `Cannot delete PDC with linked journal entry ${existing.linked_journal_id}. Accounting audit trail must be preserved.` };
-        }
-        const { error: delErr } = await client.from('busy_ufo_pdcs').delete().eq('id', id);
-        if (delErr) return { success: false, error: delErr.message };
-        return { success: true };
+        return { success: false, error: error.message };
       }
 
       if (data && typeof data === 'object' && data.success === false) {
@@ -2483,6 +2506,8 @@ export const SupabaseSyncService = {
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
     }
   },
 
@@ -2537,45 +2562,41 @@ export const SupabaseSyncService = {
     _inFlightRequests.add(reqId);
 
     try {
-      await ensureCompanyExists(client, entry.companyId || 'comp-1');
+      const compId = entry.companyId || 'comp-1';
+      await ensureCompanyExists(client, compId);
 
-      const entryPayload = {
-        id: entry.id,
-        request_id: reqId,
-        company_id: entry.companyId || 'comp-1',
-        voucher_no: entry.voucherNo,
-        voucher_type: entry.voucherType,
-        voucher_date: entry.voucherDate,
-        narration: entry.narration || '',
-        debit_total: Number(entry.debitTotal || 0),
-        credit_total: Number(entry.creditTotal || 0)
+      const linesPayload = (entry.lines || []).map((l) => ({
+        ledger_id: l.ledgerId || null,
+        ledger_name: l.ledgerName,
+        account_group: l.accountGroup || 'General',
+        debit: Number(l.debit || 0),
+        credit: Number(l.credit || 0),
+        particulars: l.particulars || ''
+      }));
+
+      const { data, error } = await client.rpc('save_journal_entry_rpc', {
+        p_request_id: reqId,
+        p_company_id: compId,
+        p_entry_id: entry.id || null,
+        p_voucher_no: entry.voucherNo,
+        p_voucher_type: entry.voucherType || 'JOURNAL',
+        p_voucher_date: entry.voucherDate || new Date().toISOString().split('T')[0],
+        p_narration: entry.narration || '',
+        p_lines: linesPayload
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected journal entry.' };
+      }
+
+      return {
+        success: true,
+        isDuplicate: data?.is_duplicate || false
       };
-
-      const { error: entryError } = await client.from('busy_ufo_journal_entries').upsert(entryPayload, { onConflict: 'id' });
-      if (entryError) {
-        if (entryError.message?.includes('request_id') || entryError.code === '23505') {
-          return { success: true, isDuplicate: true };
-        }
-        return { success: false, error: entryError.message };
-      }
-
-      if (entry.lines && entry.lines.length > 0) {
-        const lineRows = entry.lines.map((l) => ({
-          id: l.id || `${entry.id}_line_${Math.random()}`,
-          entry_id: entry.id,
-          ledger_id: l.ledgerId || null,
-          ledger_name: l.ledgerName,
-          account_group: l.accountGroup || 'General',
-          debit: Number(l.debit || 0),
-          credit: Number(l.credit || 0),
-          particulars: l.particulars || ''
-        }));
-
-        await client.from('busy_ufo_journal_lines').delete().eq('entry_id', entry.id);
-        await client.from('busy_ufo_journal_lines').insert(lineRows);
-      }
-
-      return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {

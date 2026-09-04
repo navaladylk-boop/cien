@@ -141,6 +141,17 @@ export const Sales: React.FC<SalesProps> = ({
       if (cust) setCustomCustomerName(cust.name);
     }
 
+    if (id) {
+      if (!editingInvoice) {
+        setInvoiceType('CREDIT');
+        setPaidAmountInput('0');
+      }
+    } else {
+      if (!editingInvoice) {
+        setInvoiceType('CASH');
+      }
+    }
+
     // Immediately focus cursor in the product search box after selecting customer
     setTimeout(() => {
       const firstProductInput = document.getElementById('sale-product-search-0') as HTMLInputElement | null;
