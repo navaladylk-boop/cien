@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   Plus,
   Search,
@@ -11,7 +11,8 @@ import {
   MessageCircle,
   DollarSign,
   Package,
-  Edit3
+  Edit3,
+  Loader2
 } from 'lucide-react';
 import {
   PurchaseInvoice,
@@ -27,6 +28,7 @@ import { shareInvoiceViaWhatsApp } from '../lib/whatsapp';
 import { SearchableSupplierSelect, SearchableProductSelect } from './SearchableSelect';
 import { handleEnterKeyNavigation } from '../lib/keyboardNav';
 import { WhatsAppMessageModal } from './WhatsAppMessageModal';
+import { generateUniqueRequestId } from '../lib/supabase';
 
 interface PurchasesProps {
   purchases: PurchaseInvoice[];
@@ -34,8 +36,8 @@ interface PurchasesProps {
   products: Product[];
   settings: AppSettings;
   activeCompany?: Company;
-  onCreatePurchase: (purchase: Omit<PurchaseInvoice, 'id' | 'purchaseNumber' | 'createdAt'>) => PurchaseInvoice;
-  onUpdatePurchase?: (id: string, purchase: Partial<PurchaseInvoice>) => PurchaseInvoice;
+  onCreatePurchase: (purchase: Omit<PurchaseInvoice, 'id' | 'purchaseNumber' | 'createdAt'>) => PurchaseInvoice | Promise<PurchaseInvoice>;
+  onUpdatePurchase?: (id: string, purchase: Partial<PurchaseInvoice>) => PurchaseInvoice | Promise<PurchaseInvoice>;
   onDeletePurchase?: (id: string) => void;
   onPrintPurchase: (purchase: PurchaseInvoice) => void;
   showToast: (type: 'success' | 'error' | 'info', message: string) => void;
@@ -64,6 +66,9 @@ export const Purchases: React.FC<PurchasesProps> = ({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingPurchase, setEditingPurchase] = useState<PurchaseInvoice | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const isSavingRef = useRef(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveRequestId, setSaveRequestId] = useState('');
   const [whatsAppModalData, setWhatsAppModalData] = useState<{
     isOpen: boolean;
     purchase: PurchaseInvoice | null;
@@ -433,6 +438,11 @@ export const Purchases: React.FC<PurchasesProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    // Prevent duplicate concurrent submission
+    if (isSaving || isSavingRef.current) {
+      return;
+    }
+
     if (purchaseType === 'CREDIT' && !selectedSupplierId) {
       showToast('error', 'Please select a registered supplier for credit purchases.');
       return;
@@ -446,9 +456,18 @@ export const Purchases: React.FC<PurchasesProps> = ({
     const supp = selectedSupplierId ? suppliers.find((s) => s.id === selectedSupplierId) : null;
     const supplierNameToUse = supp ? supp.name : (customSupplierName || 'Cash Supplier / Spot Purchase');
 
+    isSavingRef.current = true;
+    setIsSaving(true);
+
+    const currentRequestId = saveRequestId || generateUniqueRequestId('pur');
+    if (!saveRequestId && !editingPurchase) {
+      setSaveRequestId(currentRequestId);
+    }
+
     try {
       if (editingPurchase && onUpdatePurchase) {
         const updated = await onUpdatePurchase(editingPurchase.id, {
+          requestId: currentRequestId,
           date: purchaseDate,
           supplierId: selectedSupplierId || undefined,
           supplierName: supplierNameToUse,
@@ -468,8 +487,10 @@ export const Purchases: React.FC<PurchasesProps> = ({
         );
         setIsModalOpen(false);
         setEditingPurchase(null);
+        setSaveRequestId('');
       } else {
         const newPurchase = await onCreatePurchase({
+          requestId: currentRequestId,
           date: purchaseDate,
           supplierId: selectedSupplierId || undefined,
           supplierName: supplierNameToUse,
@@ -488,11 +509,15 @@ export const Purchases: React.FC<PurchasesProps> = ({
           `Purchase ${newPurchase.purchaseNumber} recorded! Stock increased.`
         );
         setIsModalOpen(false);
+        setSaveRequestId('');
         onPrintPurchase(newPurchase);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to save purchase bill';
       showToast('error', msg);
+    } finally {
+      isSavingRef.current = false;
+      setIsSaving(false);
     }
   };
 
@@ -886,11 +911,13 @@ export const Purchases: React.FC<PurchasesProps> = ({
               </div>
               <button
                 type="button"
+                disabled={isSaving}
                 onClick={() => {
                   setIsModalOpen(false);
                   setEditingPurchase(null);
+                  setSaveRequestId('');
                 }}
-                className="text-slate-400 hover:text-slate-700 p-2 rounded-xl hover:bg-slate-100 cursor-pointer transition-colors"
+                className="text-slate-400 hover:text-slate-700 p-2 rounded-xl hover:bg-slate-100 disabled:opacity-50 cursor-pointer transition-colors"
                 title="Close"
               >
                 <X className="w-6 h-6" />
@@ -1280,24 +1307,36 @@ export const Purchases: React.FC<PurchasesProps> = ({
               <div className="flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-4 shrink-0">
                 <button
                   type="button"
+                  disabled={isSaving}
                   onClick={() => {
                     setIsModalOpen(false);
                     setEditingPurchase(null);
+                    setSaveRequestId('');
                   }}
-                  className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer transition-colors"
+                  className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl cursor-pointer transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className={`px-6 py-2.5 text-sm font-bold text-white rounded-xl shadow-md flex items-center gap-2 cursor-pointer transition-all active:scale-95 ${
+                  disabled={isSaving}
+                  className={`px-6 py-2.5 text-sm font-bold text-white rounded-xl shadow-md flex items-center gap-2 cursor-pointer transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none ${
                     editingPurchase
                       ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200'
                       : 'bg-purple-600 hover:bg-purple-700 shadow-purple-200'
                   }`}
                 >
-                  <CheckCircle2 className="w-4 h-4 text-yellow-400" />
-                  <span>{editingPurchase ? 'Update Purchase Bill' : 'Confirm & Save Purchase'}</span>
+                  {isSaving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 text-yellow-400" />
+                      <span>{editingPurchase ? 'Update Purchase Bill' : 'Confirm & Save Purchase'}</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>

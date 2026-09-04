@@ -830,6 +830,20 @@ export const SupabaseSyncService = {
     const year = new Date().getFullYear();
     return `EXP-${year}-${Date.now().toString().slice(-4)}`;
   },
+  async getTransactionByRequestId(requestId: string): Promise<{ found: boolean; doc_type?: string; id?: string; doc_number?: string; company_id?: string; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { found: false, error: 'Supabase not configured' };
+    try {
+      const { data, error } = await client.rpc('get_transaction_by_request_id', {
+        p_request_id: requestId
+      });
+      if (error) return { found: false, error: error.message };
+      return data || { found: false };
+    } catch (e: any) {
+      return { found: false, error: e?.message };
+    }
+  },
+
   async syncSaleInvoice(sale: SaleInvoice): Promise<{ success: boolean; error?: string; isDuplicate?: boolean; existingData?: SaleInvoice }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
@@ -843,178 +857,167 @@ export const SupabaseSyncService = {
     try {
       await ensureCompanyExists(client, sale.companyId || 'comp-1');
 
-      // 1. Try atomic PostgreSQL RPC first
-      try {
-        const { data, error } = await client.rpc('post_sale_invoice_rpc', {
-          p_request_id: reqId,
-          p_company_id: sale.companyId || 'comp-1',
-          p_customer_id: sale.customerId || null,
-          p_customer_name: sale.customerName,
-          p_sale_type: sale.type,
-          p_invoice_date: sale.date,
-          p_total_amount: Number(sale.subtotal || 0),
-          p_overall_discount: Number(sale.discount || 0),
-          p_grand_total: Number(sale.grandTotal || 0),
-          p_paid_amount: Number(sale.paidAmount || 0),
-          p_due_amount: Number(sale.dueAmount || 0),
-          p_notes: sale.notes || '',
-          p_items: sale.items.map(item => ({
-            productId: item.productId,
-            productCode: item.productCode,
-            productName: item.productName,
-            quantity: Number(item.quantity || 0),
-            unitPrice: Number(item.unitPrice || 0),
-            discount: Number(item.discount || 0),
-            discountType: item.discountType || 'PERCENT',
-            total: Number(item.total || 0)
-          }))
-        });
+      const { data, error } = await client.rpc('post_sale_invoice_rpc', {
+        p_request_id: reqId,
+        p_company_id: sale.companyId || 'comp-1',
+        p_customer_id: sale.customerId || null,
+        p_customer_name: sale.customerName,
+        p_sale_type: sale.type,
+        p_invoice_date: sale.date,
+        p_total_amount: Number(sale.subtotal || 0),
+        p_overall_discount: Number(sale.discount || 0),
+        p_grand_total: Number(sale.grandTotal || 0),
+        p_paid_amount: Number(sale.paidAmount || 0),
+        p_due_amount: Number(sale.dueAmount || 0),
+        p_notes: sale.notes || '',
+        p_items: sale.items.map(item => ({
+          productId: item.productId,
+          productCode: item.productCode || '',
+          productName: item.productName || '',
+          quantity: Number(item.quantity || 0),
+          unitPrice: Number(item.unitPrice || 0),
+          discount: Number(item.discount || 0),
+          discountType: item.discountType || 'PERCENT',
+          total: Number(item.total || 0)
+        }))
+      });
 
-        if (!error && data?.success) {
-          const isDuplicate = data?.is_duplicate || false;
-          const returnedData = data?.data;
-
-          return { 
-            success: true, 
-            isDuplicate, 
-            existingData: returnedData ? {
-              ...sale,
-              id: returnedData.id,
-              invoiceNumber: returnedData.invoice_number,
-              requestId: returnedData.request_id
-            } : undefined
-          };
+      if (error) {
+        // Timeout recovery check
+        const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
+        if (isTimeout) {
+          const recovery = await this.getTransactionByRequestId(reqId);
+          if (recovery.found && recovery.id) {
+            return {
+              success: true,
+              isDuplicate: true,
+              existingData: {
+                ...sale,
+                id: recovery.id,
+                invoiceNumber: recovery.doc_number || sale.invoiceNumber,
+                requestId: reqId
+              }
+            };
+          }
         }
-      } catch (rpcErr) {
-        console.warn('RPC post_sale_invoice_rpc failed, falling back to direct table sync:', rpcErr);
+        return { success: false, error: error.message };
       }
 
-      // 2. Direct Table Fallback (if RPC is not installed or schema cache is refreshing)
-      const { data: existingSale } = await client
-        .from('busy_ufo_sales')
-        .select('*')
-        .eq('request_id', reqId)
-        .maybeSingle();
+      if (data && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected sales invoice transaction.' };
+      }
 
-      if (existingSale) {
-        return {
-          success: true,
-          isDuplicate: true,
-          existingData: {
+      if (data?.success) {
+        const isDuplicate = data?.is_duplicate || false;
+        const returnedData = data?.data;
+
+        return { 
+          success: true, 
+          isDuplicate, 
+          existingData: returnedData ? {
             ...sale,
-            id: existingSale.id,
-            invoiceNumber: existingSale.invoice_number,
-            requestId: existingSale.request_id
-          }
+            id: returnedData.id,
+            invoiceNumber: returnedData.invoice_number,
+            requestId: returnedData.request_id
+          } : undefined
         };
       }
 
-      const finalInvNum = sale.invoiceNumber || await this.generateNextSalesInvoiceNumber(sale.companyId || 'comp-1');
-
-      const salePayload: any = {
-        id: sale.id,
-        request_id: reqId,
-        invoice_number: finalInvNum,
-        invoice_date: sale.date,
-        customer_id: sale.customerId || null,
-        customer_name: sale.customerName,
-        sale_type: sale.type,
-        total_amount: Number(sale.subtotal || 0),
-        overall_discount: Number(sale.discount || 0),
-        grand_total: Number(sale.grandTotal || 0),
-        paid_amount: Number(sale.paidAmount || 0),
-        due_amount: Number(sale.dueAmount || 0),
-        payment_status: Number(sale.dueAmount || 0) <= 0 ? 'PAID' : (Number(sale.paidAmount || 0) > 0 ? 'PARTIAL' : 'UNPAID'),
-        company_id: sale.companyId || 'comp-1',
-        notes: sale.notes || ''
-      };
-
-      const { error: saleErr } = await client.from('busy_ufo_sales').upsert(salePayload);
-      if (saleErr) {
-        // Retry without request_id if column not present yet
-        delete salePayload.request_id;
-        const { error: retryErr } = await client.from('busy_ufo_sales').upsert(salePayload);
-        if (retryErr) {
-          return { success: false, error: retryErr.message };
-        }
-      }
-
-      // Upsert Sale Items
-      if (sale.items && sale.items.length > 0) {
-        const itemsPayload = sale.items.map(item => ({
-          invoice_id: sale.id,
-          product_id: item.productId,
-          product_code: item.productCode || '',
-          product_name: item.productName || '',
-          quantity: Number(item.quantity || 0),
-          unit_price: Number(item.unitPrice || 0),
-          discount: Number(item.discount || 0),
-          discount_type: item.discountType || 'PERCENT',
-          total: Number(item.total || 0)
-        }));
-        await client.from('busy_ufo_sale_items').delete().eq('invoice_id', sale.id);
-        await client.from('busy_ufo_sale_items').insert(itemsPayload);
-
-        // Update product stocks
-        for (const item of sale.items) {
-          try {
-            const { data: p } = await client.from('busy_ufo_products').select('current_stock').eq('id', item.productId).maybeSingle();
-            if (p) {
-              await client.from('busy_ufo_products').update({ current_stock: Math.max(0, (p.current_stock || 0) - Number(item.quantity || 0)) }).eq('id', item.productId);
-            }
-          } catch {}
-        }
-      }
-
-      // Update customer balance
-      if (sale.customerId && Number(sale.dueAmount || 0) > 0) {
-        try {
-          const { data: c } = await client.from('busy_ufo_customers').select('current_balance').eq('id', sale.customerId).maybeSingle();
-          if (c) {
-            await client.from('busy_ufo_customers').update({ current_balance: (c.current_balance || 0) + Number(sale.dueAmount || 0) }).eq('id', sale.customerId);
-          }
-        } catch {}
-      }
-
-      return {
-        success: true,
-        existingData: {
-          ...sale,
-          invoiceNumber: finalInvNum,
-          requestId: reqId
-        }
-      };
+      return { success: false, error: 'Unknown response from post_sale_invoice_rpc.' };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {
       _inFlightRequests.delete(reqId);
     }
   },
+
+  async updateSaleInvoiceAtomic(
+    invoiceId: string,
+    sale: Partial<SaleInvoice>,
+    updateRequestId: string,
+    companyId?: string
+  ): Promise<{ success: boolean; error?: string; isDuplicate?: boolean; data?: any }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = updateRequestId || `req_upd_sale_${invoiceId}_${Date.now()}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'An update transaction with this Request ID is already in-flight.' };
+    }
+    _inFlightRequests.add(reqId);
+
+    try {
+      const compId = sale.companyId || companyId || 'comp-1';
+      await ensureCompanyExists(client, compId);
+
+      const itemsPayload = (sale.items || []).map((item) => ({
+        productId: item.productId,
+        productCode: item.productCode || '',
+        productName: item.productName || '',
+        quantity: Number(item.quantity || 0),
+        unitPrice: Number(item.unitPrice || 0),
+        discount: Number(item.discount || 0),
+        discountType: item.discountType || 'PERCENT',
+        total: Number(item.total || 0)
+      }));
+
+      const { data, error } = await client.rpc('update_sale_invoice_rpc', {
+        p_request_id: reqId,
+        p_company_id: compId,
+        p_invoice_id: invoiceId,
+        p_customer_id: sale.customerId || null,
+        p_customer_name: sale.customerName || '',
+        p_sale_type: sale.type || 'CASH',
+        p_invoice_date: sale.date || new Date().toISOString().split('T')[0],
+        p_total_amount: Number(sale.subtotal || 0),
+        p_overall_discount: Number(sale.discount || 0),
+        p_grand_total: Number(sale.grandTotal || 0),
+        p_paid_amount: Number(sale.paidAmount || 0),
+        p_due_amount: Number(sale.dueAmount || 0),
+        p_notes: sale.notes || '',
+        p_items: itemsPayload
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      if (data && data.success === false) {
+        return { success: false, error: data.error || 'Failed to update sale invoice atomically.' };
+      }
+
+      return {
+        success: true,
+        isDuplicate: data?.is_duplicate || false,
+        data: data?.data
+      };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Exception during sale invoice update.' };
+    } finally {
+      _inFlightRequests.delete(reqId);
+    }
+  },
+
   async deleteSaleInvoice(invoiceId: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
     try {
-      // 1. Delete child items first
       try {
         await client.from('busy_ufo_sale_items').delete().eq('invoice_id', invoiceId);
       } catch (err) {
         console.warn('Warning deleting sale items child rows:', err);
       }
 
-      // 2. Unlink any receipts referencing this invoice
       try {
         await client.from('busy_ufo_customer_receipts').update({ invoice_id: null }).eq('invoice_id', invoiceId);
       } catch {}
 
-      // 3. Delete parent sale invoice
       const { error } = await client.from('busy_ufo_sales').delete().eq('id', invoiceId);
       if (error) {
-        console.warn('Supabase sale delete error:', error);
         return { success: false, error: error.message };
       }
       return { success: true };
     } catch (e: any) {
-      console.warn('Supabase sale delete exception:', e);
       return { success: false, error: e?.message };
     }
   },
@@ -1033,145 +1036,251 @@ export const SupabaseSyncService = {
     try {
       await ensureCompanyExists(client, purchase.companyId || 'comp-1');
 
-      // 1. Try atomic PostgreSQL RPC first
-      try {
-        const { data, error } = await client.rpc('post_purchase_invoice_rpc', {
-          p_request_id: reqId,
-          p_company_id: purchase.companyId || 'comp-1',
-          p_supplier_id: purchase.supplierId || null,
-          p_supplier_name: purchase.supplierName,
-          p_purchase_type: purchase.type,
-          p_purchase_date: purchase.date,
-          p_total_amount: Number(purchase.subtotal || 0),
-          p_overall_discount: Number(purchase.discount || 0),
-          p_grand_total: Number(purchase.grandTotal || 0),
-          p_paid_amount: Number(purchase.paidAmount || 0),
-          p_due_amount: Number(purchase.dueAmount || 0),
-          p_notes: purchase.notes || '',
-          p_items: purchase.items.map(item => ({
-            productId: item.productId,
-            productCode: item.productCode,
-            productName: item.productName,
-            quantity: Number(item.quantity || 0),
-            unitCost: Number(item.unitCost || 0),
-            discount: Number(item.discount || 0),
-            discountType: item.discountType || 'PERCENT',
-            total: Number(item.total || 0)
-          }))
-        });
+      const { data, error } = await client.rpc('post_purchase_invoice_rpc', {
+        p_request_id: reqId,
+        p_company_id: purchase.companyId || 'comp-1',
+        p_supplier_id: purchase.supplierId || null,
+        p_supplier_name: purchase.supplierName,
+        p_purchase_type: purchase.type,
+        p_purchase_date: purchase.date,
+        p_total_amount: Number(purchase.subtotal || 0),
+        p_overall_discount: Number(purchase.discount || 0),
+        p_grand_total: Number(purchase.grandTotal || 0),
+        p_paid_amount: Number(purchase.paidAmount || 0),
+        p_due_amount: Number(purchase.dueAmount || 0),
+        p_notes: purchase.notes || '',
+        p_items: purchase.items.map(item => ({
+          productId: item.productId,
+          productCode: item.productCode || '',
+          productName: item.productName || '',
+          quantity: Number(item.quantity || 0),
+          unitCost: Number(item.unitCost || 0),
+          discount: Number(item.discount || 0),
+          discountType: item.discountType || 'PERCENT',
+          total: Number(item.total || 0)
+        }))
+      });
 
-        if (!error && data?.success) {
-          const isDuplicate = data?.is_duplicate || false;
-          const returnedData = data?.data;
-
-          return { 
-            success: true, 
-            isDuplicate, 
-            existingData: returnedData ? {
-              ...purchase,
-              id: returnedData.id,
-              purchaseNumber: returnedData.purchase_number,
-              requestId: returnedData.request_id
-            } : undefined
-          };
+      if (error) {
+        const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
+        if (isTimeout) {
+          const recovery = await this.getTransactionByRequestId(reqId);
+          if (recovery.found && recovery.id) {
+            return {
+              success: true,
+              isDuplicate: true,
+              existingData: {
+                ...purchase,
+                id: recovery.id,
+                purchaseNumber: recovery.doc_number || purchase.purchaseNumber,
+                requestId: reqId
+              }
+            };
+          }
         }
-      } catch (rpcErr) {
-        console.warn('RPC post_purchase_invoice_rpc failed, falling back to direct table sync:', rpcErr);
+        return { success: false, error: error.message };
       }
 
-      // 2. Direct Table Fallback (if RPC is not installed or schema cache is refreshing)
-      const { data: existingPur } = await client
-        .from('busy_ufo_purchases')
-        .select('*')
-        .eq('request_id', reqId)
-        .maybeSingle();
+      if (data && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected purchase invoice transaction.' };
+      }
 
-      if (existingPur) {
-        return {
-          success: true,
-          isDuplicate: true,
-          existingData: {
+      if (data?.success) {
+        const isDuplicate = data?.is_duplicate || false;
+        const returnedData = data?.data;
+
+        return { 
+          success: true, 
+          isDuplicate, 
+          existingData: returnedData ? {
             ...purchase,
-            id: existingPur.id,
-            purchaseNumber: existingPur.purchase_number,
-            requestId: existingPur.request_id
-          }
+            id: returnedData.id,
+            purchaseNumber: returnedData.purchase_number,
+            requestId: returnedData.request_id
+          } : undefined
         };
       }
 
-      const finalPurNum = purchase.purchaseNumber || await this.generateNextPurchaseNumber(purchase.companyId || 'comp-1');
+      return { success: false, error: 'Unknown response from post_purchase_invoice_rpc.' };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
+    }
+  },
 
-      const purPayload: any = {
-        id: purchase.id,
-        request_id: reqId,
-        purchase_number: finalPurNum,
-        purchase_date: purchase.date,
-        supplier_id: purchase.supplierId || null,
-        supplier_name: purchase.supplierName,
-        purchase_type: purchase.type,
-        total_amount: Number(purchase.subtotal || 0),
-        overall_discount: Number(purchase.discount || 0),
-        grand_total: Number(purchase.grandTotal || 0),
-        paid_amount: Number(purchase.paidAmount || 0),
-        due_amount: Number(purchase.dueAmount || 0),
-        payment_status: Number(purchase.dueAmount || 0) <= 0 ? 'PAID' : (Number(purchase.paidAmount || 0) > 0 ? 'PARTIAL' : 'UNPAID'),
-        company_id: purchase.companyId || 'comp-1',
-        notes: purchase.notes || ''
-      };
+  async updatePurchaseInvoiceAtomic(
+    purchaseId: string,
+    purchase: Partial<PurchaseInvoice>,
+    updateRequestId: string,
+    companyId?: string
+  ): Promise<{ success: boolean; error?: string; isDuplicate?: boolean; data?: any }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
 
-      const { error: purErr } = await client.from('busy_ufo_purchases').upsert(purPayload);
-      if (purErr) {
-        delete purPayload.request_id;
-        const { error: retryErr } = await client.from('busy_ufo_purchases').upsert(purPayload);
-        if (retryErr) {
-          return { success: false, error: retryErr.message };
-        }
+    const reqId = updateRequestId || `req_upd_pur_${purchaseId}_${Date.now()}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'An update transaction with this Request ID is already in-flight.' };
+    }
+    _inFlightRequests.add(reqId);
+
+    try {
+      const compId = purchase.companyId || companyId || 'comp-1';
+      await ensureCompanyExists(client, compId);
+
+      const itemsPayload = (purchase.items || []).map((item) => ({
+        productId: item.productId,
+        productCode: item.productCode || '',
+        productName: item.productName || '',
+        quantity: Number(item.quantity || 0),
+        unitCost: Number(item.unitCost || 0),
+        discount: Number(item.discount || 0),
+        discountType: item.discountType || 'PERCENT',
+        total: Number(item.total || 0)
+      }));
+
+      const { data, error } = await client.rpc('update_purchase_invoice_rpc', {
+        p_request_id: reqId,
+        p_company_id: compId,
+        p_purchase_id: purchaseId,
+        p_supplier_id: purchase.supplierId || null,
+        p_supplier_name: purchase.supplierName || '',
+        p_purchase_type: purchase.type || 'CASH',
+        p_purchase_date: purchase.date || new Date().toISOString().split('T')[0],
+        p_total_amount: Number(purchase.subtotal || 0),
+        p_overall_discount: Number(purchase.discount || 0),
+        p_grand_total: Number(purchase.grandTotal || 0),
+        p_paid_amount: Number(purchase.paidAmount || 0),
+        p_due_amount: Number(purchase.dueAmount || 0),
+        p_notes: purchase.notes || '',
+        p_items: itemsPayload
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
       }
 
-      // Upsert Purchase Items
-      if (purchase.items && purchase.items.length > 0) {
-        const itemsPayload = purchase.items.map(item => ({
-          purchase_id: purchase.id,
-          product_id: item.productId,
-          product_code: item.productCode || '',
-          product_name: item.productName || '',
-          quantity: Number(item.quantity || 0),
-          unit_cost: Number(item.unitCost || 0),
-          discount: Number(item.discount || 0),
-          discount_type: item.discountType || 'PERCENT',
-          total: Number(item.total || 0)
-        }));
-        await client.from('busy_ufo_purchase_items').delete().eq('purchase_id', purchase.id);
-        await client.from('busy_ufo_purchase_items').insert(itemsPayload);
-
-        // Update product stocks (add stock)
-        for (const item of purchase.items) {
-          try {
-            const { data: p } = await client.from('busy_ufo_products').select('current_stock').eq('id', item.productId).maybeSingle();
-            if (p) {
-              await client.from('busy_ufo_products').update({ current_stock: (p.current_stock || 0) + Number(item.quantity || 0) }).eq('id', item.productId);
-            }
-          } catch {}
-        }
-      }
-
-      // Update supplier balance
-      if (purchase.supplierId && Number(purchase.dueAmount || 0) > 0) {
-        try {
-          const { data: s } = await client.from('busy_ufo_suppliers').select('current_balance').eq('id', purchase.supplierId).maybeSingle();
-          if (s) {
-            await client.from('busy_ufo_suppliers').update({ current_balance: (s.current_balance || 0) + Number(purchase.dueAmount || 0) }).eq('id', purchase.supplierId);
-          }
-        } catch {}
+      if (data && data.success === false) {
+        return { success: false, error: data.error || 'Failed to update purchase invoice atomically.' };
       }
 
       return {
         success: true,
-        existingData: {
-          ...purchase,
-          purchaseNumber: finalPurNum,
-          requestId: reqId
+        isDuplicate: data?.is_duplicate || false,
+        data: data?.data
+      };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Exception during purchase invoice update.' };
+    } finally {
+      _inFlightRequests.delete(reqId);
+    }
+  },
+
+  async deletePurchaseInvoice(purchaseId: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+    try {
+      try {
+        await client.from('busy_ufo_purchase_items').delete().eq('purchase_id', purchaseId);
+      } catch (err) {
+        console.warn('Warning deleting purchase items child rows:', err);
+      }
+
+      try {
+        await client.from('busy_ufo_supplier_payments').update({ purchase_id: null }).eq('purchase_id', purchaseId);
+      } catch {}
+
+      const { error } = await client.from('busy_ufo_purchases').delete().eq('id', purchaseId);
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
+    }
+  },
+
+  // --- RETURNS (SALES RETURN & PURCHASE RETURN) ---
+  async syncSaleReturn(saleReturn: SaleReturn): Promise<{ success: boolean; error?: string; isDuplicate?: boolean; existingData?: SaleReturn; data?: any }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = saleReturn.requestId || `req_sr_${saleReturn.id}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'A sales return request with this Request ID is already in-flight.' };
+    }
+    _inFlightRequests.add(reqId);
+
+    try {
+      await ensureCompanyExists(client, saleReturn.companyId || 'comp-1');
+
+      const itemsPayload = (saleReturn.items || []).map((it) => ({
+        productId: it.productId,
+        productCode: it.productCode || '',
+        productName: it.productName || '',
+        quantity: Number(it.quantity || 0),
+        unitPrice: Number(it.unitPrice || 0),
+        total: Number(it.total || 0)
+      }));
+
+      const { data, error } = await client.rpc('post_sales_return_rpc', {
+        p_request_id: reqId,
+        p_company_id: saleReturn.companyId || 'comp-1',
+        p_customer_id: saleReturn.customerId || null,
+        p_customer_name: saleReturn.customerName || '',
+        p_date: saleReturn.date || new Date().toISOString().split('T')[0],
+        p_type: saleReturn.type || 'CASH',
+        p_invoice_id: saleReturn.invoiceId || null,
+        p_invoice_number: saleReturn.invoiceNumber || null,
+        p_subtotal: Number(saleReturn.subtotal || 0),
+        p_discount: Number(saleReturn.discount || 0),
+        p_grand_total: Number(saleReturn.grandTotal || 0),
+        p_refunded_amount: Number(saleReturn.refundedAmount || 0),
+        p_reason: saleReturn.reason || '',
+        p_notes: saleReturn.notes || '',
+        p_items: itemsPayload
+      });
+
+      if (error) {
+        const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
+        if (isTimeout) {
+          const recovery = await this.getTransactionByRequestId(reqId);
+          if (recovery.found && recovery.id) {
+            return {
+              success: true,
+              isDuplicate: true,
+              existingData: {
+                ...saleReturn,
+                id: recovery.id,
+                returnNumber: recovery.doc_number || saleReturn.returnNumber,
+                requestId: reqId
+              },
+              data: {
+                id: recovery.id,
+                return_number: recovery.doc_number,
+                request_id: reqId
+              }
+            };
+          }
         }
+        return { success: false, error: error.message };
+      }
+
+      if (data && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected sales return transaction.' };
+      }
+
+      const retData = data?.data || data;
+      return {
+        success: true,
+        isDuplicate: data?.is_duplicate || false,
+        existingData: retData ? {
+          ...saleReturn,
+          id: retData.id || saleReturn.id,
+          returnNumber: retData.return_number || saleReturn.returnNumber,
+          requestId: retData.request_id || reqId
+        } : undefined,
+        data: retData
       };
     } catch (e: any) {
       return { success: false, error: e?.message };
@@ -1179,115 +1288,116 @@ export const SupabaseSyncService = {
       _inFlightRequests.delete(reqId);
     }
   },
-  async deletePurchaseInvoice(purchaseId: string): Promise<{ success: boolean; error?: string }> {
+
+  async deleteSaleReturn(returnId: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
     try {
-      // 1. Delete child purchase items first
-      try {
-        await client.from('busy_ufo_purchase_items').delete().eq('purchase_id', purchaseId);
-      } catch (err) {
-        console.warn('Warning deleting purchase items child rows:', err);
-      }
-
-      // 2. Unlink any payments referencing this purchase
-      try {
-        await client.from('busy_ufo_supplier_payments').update({ purchase_id: null }).eq('purchase_id', purchaseId);
-      } catch {}
-
-      // 3. Delete parent purchase
-      const { error } = await client.from('busy_ufo_purchases').delete().eq('id', purchaseId);
-      if (error) {
-        console.warn('Supabase purchase delete error:', error);
-        return { success: false, error: error.message };
-      }
+      const { error } = await client.from('busy_ufo_sale_returns').delete().eq('id', returnId);
+      if (error) return { success: false, error: error.message };
       return { success: true };
     } catch (e: any) {
-      console.warn('Supabase purchase delete exception:', e);
       return { success: false, error: e?.message };
     }
   },
 
-  // --- RETURNS (SALES RETURN & PURCHASE RETURN) ---
-  async syncSaleReturn(saleReturn: SaleReturn): Promise<{ success: boolean; error?: string }> {
+  async syncPurchaseReturn(purchaseReturn: PurchaseReturn): Promise<{ success: boolean; error?: string; isDuplicate?: boolean; existingData?: PurchaseReturn; data?: any }> {
     const client = getSupabaseClient();
-    if (!client) return { success: true };
-    try {
-      await ensureCompanyExists(client, saleReturn.companyId || 'comp-1');
-      const payload = {
-        id: saleReturn.id,
-        company_id: saleReturn.companyId || 'comp-1',
-        return_number: saleReturn.returnNumber,
-        invoice_id: saleReturn.invoiceId || null,
-        invoice_number: saleReturn.invoiceNumber || null,
-        date: saleReturn.date,
-        customer_id: saleReturn.customerId,
-        customer_name: saleReturn.customerName,
-        type: saleReturn.type,
-        reason: saleReturn.reason || '',
-        items: saleReturn.items || [],
-        subtotal: Number(saleReturn.subtotal || 0),
-        discount: Number(saleReturn.discount || 0),
-        grand_total: Number(saleReturn.grandTotal || 0),
-        refunded_amount: Number(saleReturn.refundedAmount || 0),
-        notes: saleReturn.notes || '',
-        status: saleReturn.status || 'COMPLETED',
-        created_at: saleReturn.createdAt || new Date().toISOString()
-      };
-      await client.from('busy_ufo_sale_returns').upsert(payload);
-    } catch (err) {
-      console.warn('Supabase sale return sync warning:', err);
+    if (!client) return { success: false, error: 'Supabase not configured' };
+
+    const reqId = purchaseReturn.requestId || `req_pr_${purchaseReturn.id}`;
+    if (_inFlightRequests.has(reqId)) {
+      return { success: false, error: 'A purchase return request with this Request ID is already in-flight.' };
     }
-    return { success: true };
-  },
+    _inFlightRequests.add(reqId);
 
-  async deleteSaleReturn(returnId: string): Promise<{ success: boolean; error?: string }> {
-    const client = getSupabaseClient();
-    if (!client) return { success: true };
-    try {
-      await client.from('busy_ufo_sale_returns').delete().eq('id', returnId);
-    } catch {}
-    return { success: true };
-  },
-
-  async syncPurchaseReturn(purchaseReturn: PurchaseReturn): Promise<{ success: boolean; error?: string }> {
-    const client = getSupabaseClient();
-    if (!client) return { success: true };
     try {
       await ensureCompanyExists(client, purchaseReturn.companyId || 'comp-1');
-      const payload = {
-        id: purchaseReturn.id,
-        company_id: purchaseReturn.companyId || 'comp-1',
-        return_number: purchaseReturn.returnNumber,
-        purchase_id: purchaseReturn.purchaseId || null,
-        purchase_number: purchaseReturn.purchaseNumber || null,
-        date: purchaseReturn.date,
-        supplier_id: purchaseReturn.supplierId,
-        supplier_name: purchaseReturn.supplierName,
-        type: purchaseReturn.type,
-        reason: purchaseReturn.reason || '',
-        items: purchaseReturn.items || [],
-        subtotal: Number(purchaseReturn.subtotal || 0),
-        discount: Number(purchaseReturn.discount || 0),
-        grand_total: Number(purchaseReturn.grandTotal || 0),
-        notes: purchaseReturn.notes || '',
-        status: purchaseReturn.status || 'COMPLETED',
-        created_at: purchaseReturn.createdAt || new Date().toISOString()
+
+      const itemsPayload = (purchaseReturn.items || []).map((it) => ({
+        productId: it.productId,
+        productCode: it.productCode || '',
+        productName: it.productName || '',
+        quantity: Number(it.quantity || 0),
+        unitCost: Number(it.unitCost || 0),
+        total: Number(it.total || 0)
+      }));
+
+      const { data, error } = await client.rpc('post_purchase_return_rpc', {
+        p_request_id: reqId,
+        p_company_id: purchaseReturn.companyId || 'comp-1',
+        p_supplier_id: purchaseReturn.supplierId || null,
+        p_supplier_name: purchaseReturn.supplierName || '',
+        p_date: purchaseReturn.date || new Date().toISOString().split('T')[0],
+        p_type: purchaseReturn.type || 'CASH',
+        p_purchase_id: purchaseReturn.purchaseId || null,
+        p_purchase_number: purchaseReturn.purchaseNumber || null,
+        p_subtotal: Number(purchaseReturn.subtotal || 0),
+        p_discount: Number(purchaseReturn.discount || 0),
+        p_grand_total: Number(purchaseReturn.grandTotal || 0),
+        p_reason: purchaseReturn.reason || '',
+        p_notes: purchaseReturn.notes || '',
+        p_items: itemsPayload
+      });
+
+      if (error) {
+        const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
+        if (isTimeout) {
+          const recovery = await this.getTransactionByRequestId(reqId);
+          if (recovery.found && recovery.id) {
+            return {
+              success: true,
+              isDuplicate: true,
+              existingData: {
+                ...purchaseReturn,
+                id: recovery.id,
+                returnNumber: recovery.doc_number || purchaseReturn.returnNumber,
+                requestId: reqId
+              },
+              data: {
+                id: recovery.id,
+                return_number: recovery.doc_number,
+                request_id: reqId
+              }
+            };
+          }
+        }
+        return { success: false, error: error.message };
+      }
+
+      if (data && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected purchase return transaction.' };
+      }
+
+      const retData = data?.data || data;
+      return {
+        success: true,
+        isDuplicate: data?.is_duplicate || false,
+        existingData: retData ? {
+          ...purchaseReturn,
+          id: retData.id || purchaseReturn.id,
+          returnNumber: retData.return_number || purchaseReturn.returnNumber,
+          requestId: retData.request_id || reqId
+        } : undefined,
+        data: retData
       };
-      await client.from('busy_ufo_purchase_returns').upsert(payload);
-    } catch (err) {
-      console.warn('Supabase purchase return sync warning:', err);
+    } catch (e: any) {
+      return { success: false, error: e?.message };
+    } finally {
+      _inFlightRequests.delete(reqId);
     }
-    return { success: true };
   },
 
   async deletePurchaseReturn(returnId: string): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
-    if (!client) return { success: true };
+    if (!client) return { success: false, error: 'Supabase not configured' };
     try {
-      await client.from('busy_ufo_purchase_returns').delete().eq('id', returnId);
-    } catch {}
-    return { success: true };
+      const { error } = await client.from('busy_ufo_purchase_returns').delete().eq('id', returnId);
+      if (error) return { success: false, error: error.message };
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
+    }
   },
 
   // --- RECEIPTS, PAYMENTS & EXPENSES ---
@@ -1304,136 +1414,57 @@ export const SupabaseSyncService = {
     try {
       await ensureCompanyExists(client, receipt.companyId || 'comp-1');
 
-      // 1. Idempotency Check
-      const { data: existingRec } = await client
-        .from('busy_ufo_customer_receipts')
-        .select('*')
-        .eq('request_id', reqId)
-        .maybeSingle();
+      const { data, error } = await client.rpc('post_customer_receipt_rpc', {
+        p_request_id: reqId,
+        p_company_id: receipt.companyId || 'comp-1',
+        p_customer_id: receipt.customerId || null,
+        p_customer_name: receipt.customerName || 'Customer',
+        p_date: receipt.date || new Date().toISOString().split('T')[0],
+        p_amount: Number(receipt.amount || 0),
+        p_payment_method: receipt.paymentMode || 'CASH',
+        p_reference_no: receipt.referenceNo || '',
+        p_notes: receipt.notes || ''
+      });
 
-      if (existingRec) {
+      if (error) {
+        const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
+        if (isTimeout) {
+          const recovery = await this.getTransactionByRequestId(reqId);
+          if (recovery.found && recovery.id) {
+            return {
+              success: true,
+              isDuplicate: true,
+              existingData: {
+                ...receipt,
+                id: recovery.id,
+                receiptNumber: recovery.doc_number || receipt.receiptNumber,
+                requestId: reqId
+              }
+            };
+          }
+        }
+        return { success: false, error: error.message };
+      }
+
+      if (data && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected customer receipt.' };
+      }
+
+      if (data?.success) {
+        const recData = data.data;
         return {
           success: true,
-          isDuplicate: true,
-          existingData: {
+          isDuplicate: data.is_duplicate || false,
+          existingData: recData ? {
             ...receipt,
-            id: existingRec.id,
-            receiptNumber: existingRec.receipt_number,
-            requestId: existingRec.request_id
-          }
+            id: recData.id || receipt.id,
+            receiptNumber: recData.receipt_number || receipt.receiptNumber,
+            requestId: recData.request_id || reqId
+          } : undefined
         };
       }
 
-      const finalRecNum = receipt.receiptNumber || await this.generateNextReceiptNumber(receipt.companyId || 'comp-1');
-
-      // 2. Direct Upsert of Receipt
-      const payload: any = {
-        id: receipt.id,
-        request_id: reqId,
-        receipt_number: finalRecNum,
-        date: receipt.date || new Date().toISOString().split('T')[0],
-        customer_id: receipt.customerId || null,
-        customer_name: receipt.customerName || 'Customer',
-        amount: Number(receipt.amount || 0),
-        payment_method: receipt.paymentMode || 'CASH',
-        reference_no: receipt.referenceNo || '',
-        notes: receipt.notes || '',
-        company_id: receipt.companyId || 'comp-1'
-      };
-
-      const { error: upsertErr } = await client.from('busy_ufo_customer_receipts').upsert(payload, { onConflict: 'id' });
-      if (upsertErr) {
-        delete payload.request_id;
-        const { error: retryErr } = await client.from('busy_ufo_customer_receipts').upsert(payload, { onConflict: 'id' });
-        if (retryErr) {
-          return { success: false, error: retryErr.message };
-        }
-      }
-
-      // 3. DEDUCT CUSTOMER OUTSTANDING IN SUPABASE
-      if (receipt.customerId && Number(receipt.amount || 0) > 0) {
-        try {
-          const { data: cust } = await client
-            .from('busy_ufo_customers')
-            .select('current_balance')
-            .eq('id', receipt.customerId)
-            .maybeSingle();
-          if (cust) {
-            const newBal = Math.max(0, Number(((cust.current_balance || 0) - Number(receipt.amount || 0)).toFixed(2)));
-            await client
-              .from('busy_ufo_customers')
-              .update({ current_balance: newBal, updated_at: new Date().toISOString() })
-              .eq('id', receipt.customerId);
-          }
-        } catch (custErr) {
-          console.warn('Could not update customer current_balance in Supabase:', custErr);
-        }
-      }
-
-      // 4. UPDATE SALES INVOICES (ALLOCATIONS OR FIFO) IN SUPABASE
-      if (receipt.allocations && receipt.allocations.length > 0) {
-        for (const alloc of receipt.allocations) {
-          if (alloc.allocatedAmount > 0 && alloc.invoiceId) {
-            try {
-              const { data: inv } = await client
-                .from('busy_ufo_sales')
-                .select('grand_total, paid_amount, due_amount')
-                .eq('id', alloc.invoiceId)
-                .maybeSingle();
-              if (inv) {
-                const newPaid = Number(((inv.paid_amount || 0) + alloc.allocatedAmount).toFixed(2));
-                const newDue = Math.max(0, Number(((inv.grand_total || 0) - newPaid).toFixed(2)));
-                const status = newDue <= 0 ? 'PAID' : (newPaid > 0 ? 'PARTIAL' : 'UNPAID');
-                await client
-                  .from('busy_ufo_sales')
-                  .update({ paid_amount: newPaid, due_amount: newDue, payment_status: status })
-                  .eq('id', alloc.invoiceId);
-              }
-            } catch (invErr) {
-              console.warn('Could not update sales invoice in Supabase:', invErr);
-            }
-          }
-        }
-      } else if (receipt.customerId && Number(receipt.amount || 0) > 0) {
-        // FIFO auto-settle unpaid sales invoices for this customer
-        try {
-          const { data: unpaidSales } = await client
-            .from('busy_ufo_sales')
-            .select('id, grand_total, paid_amount, due_amount, invoice_date')
-            .eq('customer_id', receipt.customerId)
-            .gt('due_amount', 0)
-            .order('invoice_date', { ascending: true });
-
-          if (unpaidSales && unpaidSales.length > 0) {
-            let rem = Number(receipt.amount);
-            for (const s of unpaidSales) {
-              if (rem <= 0) break;
-              const currentDue = Number(s.due_amount || 0);
-              const currentPaid = Number(s.paid_amount || 0);
-              const settleAmt = Math.min(rem, currentDue);
-              const newPaid = Number((currentPaid + settleAmt).toFixed(2));
-              const newDue = Math.max(0, Number(((s.grand_total || 0) - newPaid).toFixed(2)));
-              const status = newDue <= 0 ? 'PAID' : (newPaid > 0 ? 'PARTIAL' : 'UNPAID');
-              await client
-                .from('busy_ufo_sales')
-                .update({ paid_amount: newPaid, due_amount: newDue, payment_status: status })
-                .eq('id', s.id);
-              rem = Number((rem - settleAmt).toFixed(2));
-            }
-          }
-        } catch (fifoErr) {
-          console.warn('FIFO auto-settle error in Supabase:', fifoErr);
-        }
-      }
-
-      return {
-        success: true,
-        existingData: {
-          ...receipt,
-          receiptNumber: finalRecNum,
-          requestId: reqId
-        }
-      };
+      return { success: false, error: 'Unknown response from post_customer_receipt_rpc.' };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {
@@ -1445,7 +1476,6 @@ export const SupabaseSyncService = {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
     try {
-      // 1. Fetch receipt details before deleting to revert customer balance
       const { data: rec } = await client
         .from('busy_ufo_customer_receipts')
         .select('*')
@@ -1473,12 +1503,10 @@ export const SupabaseSyncService = {
 
       const { error } = await client.from('busy_ufo_customer_receipts').delete().eq('id', id);
       if (error) {
-        console.warn('Supabase receipt delete error:', error);
         return { success: false, error: error.message };
       }
       return { success: true };
     } catch (e: any) {
-      console.warn('Supabase receipt delete exception:', e);
       return { success: false, error: e?.message };
     }
   },
@@ -1496,136 +1524,57 @@ export const SupabaseSyncService = {
     try {
       await ensureCompanyExists(client, payment.companyId || 'comp-1');
 
-      // 1. Idempotency Check
-      const { data: existingPay } = await client
-        .from('busy_ufo_supplier_payments')
-        .select('*')
-        .eq('request_id', reqId)
-        .maybeSingle();
+      const { data, error } = await client.rpc('post_supplier_payment_rpc', {
+        p_request_id: reqId,
+        p_company_id: payment.companyId || 'comp-1',
+        p_supplier_id: payment.supplierId || null,
+        p_supplier_name: payment.supplierName || 'Supplier',
+        p_date: payment.date || new Date().toISOString().split('T')[0],
+        p_amount: Number(payment.amount || 0),
+        p_payment_method: payment.paymentMode || 'CASH',
+        p_reference_no: payment.referenceNo || '',
+        p_notes: payment.notes || ''
+      });
 
-      if (existingPay) {
+      if (error) {
+        const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
+        if (isTimeout) {
+          const recovery = await this.getTransactionByRequestId(reqId);
+          if (recovery.found && recovery.id) {
+            return {
+              success: true,
+              isDuplicate: true,
+              existingData: {
+                ...payment,
+                id: recovery.id,
+                paymentNumber: recovery.doc_number || payment.paymentNumber,
+                requestId: reqId
+              }
+            };
+          }
+        }
+        return { success: false, error: error.message };
+      }
+
+      if (data && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected supplier payment.' };
+      }
+
+      if (data?.success) {
+        const payData = data.data;
         return {
           success: true,
-          isDuplicate: true,
-          existingData: {
+          isDuplicate: data.is_duplicate || false,
+          existingData: payData ? {
             ...payment,
-            id: existingPay.id,
-            paymentNumber: existingPay.payment_number,
-            requestId: existingPay.request_id
-          }
+            id: payData.id || payment.id,
+            paymentNumber: payData.payment_number || payment.paymentNumber,
+            requestId: payData.request_id || reqId
+          } : undefined
         };
       }
 
-      const finalPayNum = payment.paymentNumber || await this.generateNextPaymentNumber(payment.companyId || 'comp-1');
-
-      // 2. Direct Upsert of Payment
-      const payload: any = {
-        id: payment.id,
-        request_id: reqId,
-        payment_number: finalPayNum,
-        date: payment.date || new Date().toISOString().split('T')[0],
-        supplier_id: payment.supplierId || null,
-        supplier_name: payment.supplierName || 'Supplier',
-        amount: Number(payment.amount || 0),
-        payment_method: payment.paymentMode || 'CASH',
-        reference_no: payment.referenceNo || '',
-        notes: payment.notes || '',
-        company_id: payment.companyId || 'comp-1'
-      };
-
-      const { error: upsertErr } = await client.from('busy_ufo_supplier_payments').upsert(payload, { onConflict: 'id' });
-      if (upsertErr) {
-        delete payload.request_id;
-        const { error: retryErr } = await client.from('busy_ufo_supplier_payments').upsert(payload, { onConflict: 'id' });
-        if (retryErr) {
-          return { success: false, error: retryErr.message };
-        }
-      }
-
-      // 3. DEDUCT SUPPLIER PAYABLE IN SUPABASE
-      if (payment.supplierId && Number(payment.amount || 0) > 0) {
-        try {
-          const { data: sup } = await client
-            .from('busy_ufo_suppliers')
-            .select('current_balance')
-            .eq('id', payment.supplierId)
-            .maybeSingle();
-          if (sup) {
-            const newBal = Math.max(0, Number(((sup.current_balance || 0) - Number(payment.amount || 0)).toFixed(2)));
-            await client
-              .from('busy_ufo_suppliers')
-              .update({ current_balance: newBal, updated_at: new Date().toISOString() })
-              .eq('id', payment.supplierId);
-          }
-        } catch (supErr) {
-          console.warn('Could not update supplier current_balance in Supabase:', supErr);
-        }
-      }
-
-      // 4. UPDATE PURCHASES (ALLOCATIONS OR FIFO) IN SUPABASE
-      if (payment.allocations && payment.allocations.length > 0) {
-        for (const alloc of payment.allocations) {
-          if (alloc.allocatedAmount > 0 && alloc.purchaseId) {
-            try {
-              const { data: pur } = await client
-                .from('busy_ufo_purchases')
-                .select('grand_total, paid_amount, due_amount')
-                .eq('id', alloc.purchaseId)
-                .maybeSingle();
-              if (pur) {
-                const newPaid = Number(((pur.paid_amount || 0) + alloc.allocatedAmount).toFixed(2));
-                const newDue = Math.max(0, Number(((pur.grand_total || 0) - newPaid).toFixed(2)));
-                const status = newDue <= 0 ? 'PAID' : (newPaid > 0 ? 'PARTIAL' : 'UNPAID');
-                await client
-                  .from('busy_ufo_purchases')
-                  .update({ paid_amount: newPaid, due_amount: newDue, payment_status: status })
-                  .eq('id', alloc.purchaseId);
-              }
-            } catch (purErr) {
-              console.warn('Could not update purchase in Supabase:', purErr);
-            }
-          }
-        }
-      } else if (payment.supplierId && Number(payment.amount || 0) > 0) {
-        // FIFO auto-settle unpaid purchases for this supplier
-        try {
-          const { data: unpaidPurs } = await client
-            .from('busy_ufo_purchases')
-            .select('id, grand_total, paid_amount, due_amount, purchase_date')
-            .eq('supplier_id', payment.supplierId)
-            .gt('due_amount', 0)
-            .order('purchase_date', { ascending: true });
-
-          if (unpaidPurs && unpaidPurs.length > 0) {
-            let rem = Number(payment.amount);
-            for (const p of unpaidPurs) {
-              if (rem <= 0) break;
-              const currentDue = Number(p.due_amount || 0);
-              const currentPaid = Number(p.paid_amount || 0);
-              const settleAmt = Math.min(rem, currentDue);
-              const newPaid = Number((currentPaid + settleAmt).toFixed(2));
-              const newDue = Math.max(0, Number(((p.grand_total || 0) - newPaid).toFixed(2)));
-              const status = newDue <= 0 ? 'PAID' : (newPaid > 0 ? 'PARTIAL' : 'UNPAID');
-              await client
-                .from('busy_ufo_purchases')
-                .update({ paid_amount: newPaid, due_amount: newDue, payment_status: status })
-                .eq('id', p.id);
-              rem = Number((rem - settleAmt).toFixed(2));
-            }
-          }
-        } catch (fifoErr) {
-          console.warn('FIFO auto-settle purchases error in Supabase:', fifoErr);
-        }
-      }
-
-      return {
-        success: true,
-        existingData: {
-          ...payment,
-          paymentNumber: finalPayNum,
-          requestId: reqId
-        }
-      };
+      return { success: false, error: 'Unknown response from post_supplier_payment_rpc.' };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {
@@ -1637,7 +1586,6 @@ export const SupabaseSyncService = {
     const client = getSupabaseClient();
     if (!client) return { success: false, error: 'Supabase not configured' };
     try {
-      // 1. Fetch payment details before deleting to revert supplier balance
       const { data: pay } = await client
         .from('busy_ufo_supplier_payments')
         .select('*')
@@ -1665,12 +1613,10 @@ export const SupabaseSyncService = {
 
       const { error } = await client.from('busy_ufo_supplier_payments').delete().eq('id', id);
       if (error) {
-        console.warn('Supabase payment delete error:', error);
         return { success: false, error: error.message };
       }
       return { success: true };
     } catch (e: any) {
-      console.warn('Supabase payment delete exception:', e);
       return { success: false, error: e?.message };
     }
   },
@@ -1688,71 +1634,45 @@ export const SupabaseSyncService = {
     try {
       await ensureCompanyExists(client, expense.companyId || 'comp-1');
 
-      // 1. Try atomic PostgreSQL RPC first
-      try {
-        const { data: rpcData, error: rpcError } = await client.rpc('post_expense_rpc', {
-          p_request_id: reqId,
-          p_company_id: expense.companyId || 'comp-1',
-          p_date: expense.date || new Date().toISOString().split('T')[0],
-          p_category: expense.category || 'General',
-          p_amount: Number(expense.amount || 0),
-          p_paid_to: expense.paidTo || '',
-          p_payment_method: expense.paymentMode || 'CASH',
-          p_notes: expense.notes || ''
-        });
+      const { data: rpcData, error: rpcError } = await client.rpc('post_expense_rpc', {
+        p_request_id: reqId,
+        p_company_id: expense.companyId || 'comp-1',
+        p_date: expense.date || new Date().toISOString().split('T')[0],
+        p_category: expense.category || 'General',
+        p_amount: Number(expense.amount || 0),
+        p_paid_to: expense.paidTo || '',
+        p_payment_method: expense.paymentMode || 'CASH',
+        p_notes: expense.notes || ''
+      });
 
-        if (!rpcError && rpcData?.success) {
-          if (rpcData.is_duplicate) {
-            return { success: true, isDuplicate: true };
+      if (rpcError) {
+        const isTimeout = rpcError.message?.toLowerCase().includes('timeout') || rpcError.message?.toLowerCase().includes('failed to fetch');
+        if (isTimeout) {
+          const recovery = await this.getTransactionByRequestId(reqId);
+          if (recovery.found && recovery.id) {
+            return {
+              success: true,
+              isDuplicate: true,
+              expenseNumber: recovery.doc_number || expense.expenseNumber
+            };
           }
-          const savedData = rpcData.data;
-          return { success: true, expenseNumber: savedData?.expense_number };
         }
-      } catch (rpcErr) {
-        console.warn('RPC post_expense_rpc failed, falling back to direct upsert:', rpcErr);
+        return { success: false, error: rpcError.message };
       }
 
-      // 2. Fallback direct upsert
-      const finalExpNum = expense.expenseNumber || `EXP-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`;
-      const payloadWithPaidTo: any = {
-        id: expense.id,
-        request_id: reqId,
-        expense_number: finalExpNum,
-        date: expense.date,
-        category: expense.category,
-        amount: Number(expense.amount || 0),
-        paid_to: expense.paidTo || null,
-        payment_method: expense.paymentMode || 'CASH',
-        notes: expense.notes || '',
-        company_id: expense.companyId || 'comp-1'
-      };
+      if (rpcData && rpcData.success === false) {
+        return { success: false, error: rpcData.error || 'Database rejected expense.' };
+      }
 
-      let { error } = await client.from('busy_ufo_expenses').upsert(payloadWithPaidTo, { onConflict: 'id' });
-
-      // If error is due to missing paid_to column in Postgres, retry without paid_to
-      if (error && (error.message?.includes('paid_to') || error.code === '42703')) {
-        const payloadFallback: any = {
-          id: expense.id,
-          request_id: reqId,
-          expense_number: finalExpNum,
-          date: expense.date,
-          category: expense.category,
-          amount: Number(expense.amount || 0),
-          payment_method: expense.paymentMode || 'CASH',
-          notes: expense.paidTo ? `Paid to: ${expense.paidTo}${expense.notes ? ' | ' + expense.notes : ''}` : (expense.notes || ''),
-          company_id: expense.companyId || 'comp-1'
+      if (rpcData?.success) {
+        return {
+          success: true,
+          isDuplicate: rpcData.is_duplicate || false,
+          expenseNumber: rpcData.data?.expense_number || expense.expenseNumber
         };
-        const fallbackRes = await client.from('busy_ufo_expenses').upsert(payloadFallback, { onConflict: 'id' });
-        error = fallbackRes.error;
       }
 
-      if (error) {
-        if (error.message?.includes('request_id') || error.code === '23505') {
-          return { success: true, isDuplicate: true, expenseNumber: finalExpNum };
-        }
-        return { success: false, error: error.message };
-      }
-      return { success: true, expenseNumber: finalExpNum };
+      return { success: false, error: 'Unknown response from post_expense_rpc.' };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {
@@ -1766,12 +1686,10 @@ export const SupabaseSyncService = {
     try {
       const { error } = await client.from('busy_ufo_expenses').delete().eq('id', id);
       if (error) {
-        console.warn('Supabase expense delete error:', error);
         return { success: false, error: error.message };
       }
       return { success: true };
     } catch (e: any) {
-      console.warn('Supabase expense delete exception:', e);
       return { success: false, error: e?.message };
     }
   },
@@ -2321,79 +2239,20 @@ export const SupabaseSyncService = {
         p_party_ledger_name: pdc.partyName
       });
 
-      if (!error && data) {
-        if (typeof data === 'object' && data.success !== undefined) {
-          return {
-            success: data.success,
-            data: data.data,
-            journalId: data.journal_id,
-            voucherNo: data.voucher_no
-          };
-        }
-        return { success: true, data };
+      if (error) {
+        return { success: false, error: error.message };
       }
 
-      // Fallback: Client-side atomic orchestration
-      const nowIso = new Date().toISOString();
-      const jvNo = `JV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-      const jvId = `jv-pdc-${Date.now()}`;
-
-      // 1. Update PDC
-      const { error: updErr } = await client
-        .from('busy_ufo_pdcs')
-        .update({
-          status: 'CLEARED',
-          cleared_at: nowIso,
-          cleared_bank_name: clearingBankName,
-          linked_journal_id: jvId,
-          updated_at: nowIso
-        })
-        .eq('id', pdc.id);
-
-      if (updErr) return { success: false, error: updErr.message };
-
-      // 2. Update Customer / Supplier Outstanding Balance
-      if (pdc.type === 'RECEIVED' && pdc.partyId) {
-        const { data: cust } = await client.from('busy_ufo_customers').select('current_balance').eq('id', pdc.partyId).single();
-        if (cust) {
-          const newBal = Number(cust.current_balance || 0) - Number(pdc.amount || 0);
-          await client.from('busy_ufo_customers').update({ current_balance: newBal, updated_at: nowIso }).eq('id', pdc.partyId);
-        }
-      } else if (pdc.type === 'ISSUED' && pdc.partyId) {
-        const { data: supp } = await client.from('busy_ufo_suppliers').select('current_balance').eq('id', pdc.partyId).single();
-        if (supp) {
-          const newBal = Number(supp.current_balance || 0) - Number(pdc.amount || 0);
-          await client.from('busy_ufo_suppliers').update({ current_balance: newBal, updated_at: nowIso }).eq('id', pdc.partyId);
-        }
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected PDC clearance.' };
       }
 
-      // 3. Post Journal Entry
-      const lines = pdc.type === 'RECEIVED'
-        ? [
-            { id: `${jvId}_1`, journal_id: jvId, entry_id: jvId, ledger_id: bankLedgerId, ledger_name: clearingBankName, account_id: bankLedgerId, account_name: clearingBankName, account_group: 'Bank Accounts', debit: pdc.amount, credit: 0, particulars: `PDC Cheque Cleared #${pdc.chequeNumber}` },
-            { id: `${jvId}_2`, journal_id: jvId, entry_id: jvId, ledger_id: pdc.partyId, ledger_name: pdc.partyName, account_id: pdc.partyId, account_name: pdc.partyName, account_group: 'Sundry Debtors', debit: 0, credit: pdc.amount, particulars: `Customer Realized: #${pdc.chequeNumber}` }
-          ]
-        : [
-            { id: `${jvId}_1`, journal_id: jvId, entry_id: jvId, ledger_id: pdc.partyId, ledger_name: pdc.partyName, account_id: pdc.partyId, account_name: pdc.partyName, account_group: 'Sundry Creditors', debit: pdc.amount, credit: 0, particulars: `Supplier Payment Cleared: #${pdc.chequeNumber}` },
-            { id: `${jvId}_2`, journal_id: jvId, entry_id: jvId, ledger_id: bankLedgerId, ledger_name: clearingBankName, account_id: bankLedgerId, account_name: clearingBankName, account_group: 'Bank Accounts', debit: 0, credit: pdc.amount, particulars: `Disbursement: Cheque #${pdc.chequeNumber}` }
-          ];
-
-      await client.from('busy_ufo_journal_entries').insert({
-        id: jvId,
-        request_id: `req_jrn_clr_${pdc.id}`,
-        company_id: pdc.companyId || 'comp-1',
-        entry_number: jvNo,
-        voucher_no: jvNo,
-        voucher_type: 'PDC',
-        voucher_date: clearedDate,
-        date: clearedDate,
-        narration: `PDC Cleared: Cheque #${pdc.chequeNumber} (${pdc.partyName})`,
-        debit_total: pdc.amount,
-        credit_total: pdc.amount
-      });
-      await client.from('busy_ufo_journal_lines').insert(lines);
-
-      return { success: true, journalId: jvId, voucherNo: jvNo };
+      return {
+        success: true,
+        data: data?.data || data,
+        journalId: data?.journal_id,
+        voucherNo: data?.voucher_no
+      };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {
@@ -2434,48 +2293,18 @@ export const SupabaseSyncService = {
         p_notes: bounceReason || 'Dishonored by Bank'
       });
 
-      if (!error && data) {
-        if (typeof data === 'object' && data.success !== undefined) {
-          return { success: data.success, data: data.data };
-        }
-        return { success: true, data };
+      if (error) {
+        return { success: false, error: error.message };
       }
 
-      // Fallback
-      const nowIso = new Date().toISOString();
-      const wasCleared = pdc.status === 'CLEARED';
-
-      // 1. If previously cleared, reverse customer/supplier balance
-      if (wasCleared) {
-        if (pdc.type === 'RECEIVED' && pdc.partyId) {
-          const { data: cust } = await client.from('busy_ufo_customers').select('current_balance').eq('id', pdc.partyId).single();
-          if (cust) {
-            const newBal = Number(cust.current_balance || 0) + Number(pdc.amount || 0);
-            await client.from('busy_ufo_customers').update({ current_balance: newBal, updated_at: nowIso }).eq('id', pdc.partyId);
-          }
-        } else if (pdc.type === 'ISSUED' && pdc.partyId) {
-          const { data: supp } = await client.from('busy_ufo_suppliers').select('current_balance').eq('id', pdc.partyId).single();
-          if (supp) {
-            const newBal = Number(supp.current_balance || 0) + Number(pdc.amount || 0);
-            await client.from('busy_ufo_suppliers').update({ current_balance: newBal, updated_at: nowIso }).eq('id', pdc.partyId);
-          }
-        }
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected PDC bounce.' };
       }
 
-      // 2. Update PDC
-      const { error: updErr } = await client
-        .from('busy_ufo_pdcs')
-        .update({
-          status: 'BOUNCED',
-          bounce_date: bounceDate,
-          bounce_reason: bounceReason || 'Dishonored by Bank',
-          bounce_charges: Number(bounceCharges || 0),
-          updated_at: nowIso
-        })
-        .eq('id', pdc.id);
-
-      if (updErr) return { success: false, error: updErr.message };
-      return { success: true };
+      return {
+        success: true,
+        data: data?.data || data
+      };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {
@@ -2506,26 +2335,18 @@ export const SupabaseSyncService = {
         p_is_returned: isReturned
       });
 
-      if (!error && data) {
-        if (typeof data === 'object' && data.success !== undefined) {
-          return { success: data.success, data: data.data };
-        }
-        return { success: true, data };
+      if (error) {
+        return { success: false, error: error.message };
       }
 
-      // Fallback
-      const targetStatus = isReturned ? 'RETURNED' : 'CANCELLED';
-      const { error: updErr } = await client
-        .from('busy_ufo_pdcs')
-        .update({
-          status: targetStatus,
-          notes: reason ? reason : undefined,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', pdcId);
+      if (data && typeof data === 'object' && data.success === false) {
+        return { success: false, error: data.error || 'Database rejected PDC cancellation.' };
+      }
 
-      if (updErr) return { success: false, error: updErr.message };
-      return { success: true };
+      return {
+        success: true,
+        data: data?.data || data
+      };
     } catch (e: any) {
       return { success: false, error: e?.message };
     } finally {

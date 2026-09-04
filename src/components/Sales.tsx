@@ -39,8 +39,8 @@ interface SalesProps {
   products: Product[];
   settings: AppSettings;
   activeCompany?: Company;
-  onCreateInvoice: (invoice: Omit<SaleInvoice, 'id' | 'invoiceNumber' | 'createdAt'>) => SaleInvoice;
-  onUpdateInvoice?: (id: string, invoice: Partial<SaleInvoice>) => SaleInvoice;
+  onCreateInvoice: (invoice: Omit<SaleInvoice, 'id' | 'invoiceNumber' | 'createdAt'>) => SaleInvoice | Promise<SaleInvoice>;
+  onUpdateInvoice?: (id: string, invoice: Partial<SaleInvoice>) => SaleInvoice | Promise<SaleInvoice>;
   onDeleteInvoice?: (id: string) => void;
   onPrintInvoice: (invoice: SaleInvoice) => void;
   showToast: (type: 'success' | 'error' | 'info', message: string) => void;

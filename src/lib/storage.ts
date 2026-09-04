@@ -1051,7 +1051,8 @@ export const StorageService = {
       updatedAt: now
     };
 
-    const syncRes = await SupabaseSyncService.syncSaleInvoice(updatedSale);
+    const reqId = invoiceData.requestId || generateUniqueRequestId(`upd_sale_${id}`);
+    const syncRes = await SupabaseSyncService.updateSaleInvoiceAtomic(id, updatedSale, reqId, targetCompId);
     if (!syncRes.success) {
       return {
         success: false,
@@ -1154,10 +1155,12 @@ export const StorageService = {
     returnData: Omit<SaleReturn, 'id' | 'returnNumber' | 'createdAt'> & { id?: string; returnNumber?: string },
     companyId?: string
   ): Promise<{ success: boolean; data?: SaleReturn; message?: string; error?: string }> {
+    if (!checkOnline()) return { success: false, error: 'Internet connection is required. The sales return was not saved.' };
+    const creds = getActiveSupabaseCredentials();
+    if (!creds.url || !creds.key) return { success: false, error: 'Supabase database is not configured.' };
+
     const targetCompId = returnData.companyId || companyId || DEFAULT_COMPANY_ID;
     const now = new Date().toISOString();
-    const count = _inMemorySaleReturns.filter((sr) => (sr.companyId || DEFAULT_COMPANY_ID) === targetCompId).length + 1;
-    const returnNumber = returnData.returnNumber || `SR-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`;
     const reqId = returnData.requestId || generateUniqueRequestId('slr');
 
     const saleReturn: SaleReturn = {
@@ -1165,21 +1168,36 @@ export const StorageService = {
       id: returnData.id || `sr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       requestId: reqId,
       companyId: targetCompId,
-      returnNumber,
+      returnNumber: returnData.returnNumber || '',
       createdAt: now,
       updatedAt: now
     };
 
+    const syncRes = await SupabaseSyncService.syncSaleReturn(saleReturn);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to save sales return to database.' };
+    }
+
+    const finalReturn = syncRes.existingData || saleReturn;
+
+    if (syncRes.isDuplicate) {
+      const existsInMemory = _inMemorySaleReturns.some((s) => s.id === finalReturn.id || s.requestId === finalReturn.requestId);
+      if (!existsInMemory) {
+        _inMemorySaleReturns.unshift(finalReturn);
+      }
+      return { success: true, data: finalReturn, message: `Sales return ${finalReturn.returnNumber} was already recorded.` };
+    }
+
     // Update Customer Outstanding Balance if Credit return
-    if (saleReturn.customerId && saleReturn.type === 'CREDIT') {
-      const cIdx = _inMemoryCustomers.findIndex((c) => c.id === saleReturn.customerId);
+    if (finalReturn.customerId && finalReturn.type === 'CREDIT') {
+      const cIdx = _inMemoryCustomers.findIndex((c) => c.id === finalReturn.customerId);
       if (cIdx !== -1) {
-        _inMemoryCustomers[cIdx].outstandingBalance = Number((_inMemoryCustomers[cIdx].outstandingBalance - saleReturn.grandTotal).toFixed(2));
+        _inMemoryCustomers[cIdx].outstandingBalance = Number((_inMemoryCustomers[cIdx].outstandingBalance - finalReturn.grandTotal).toFixed(2));
       }
     }
 
     // Increase product currentStock (Stock IN)
-    (saleReturn.items || []).forEach((item) => {
+    (finalReturn.items || []).forEach((item) => {
       const pIdx = _inMemoryProducts.findIndex(
         (p) => p.id === item.productId || (item.productCode && p.code === item.productCode)
       );
@@ -1189,20 +1207,25 @@ export const StorageService = {
       }
     });
 
-    _inMemorySaleReturns.unshift(saleReturn);
-
-    if (checkOnline()) {
-      SupabaseSyncService.syncSaleReturn(saleReturn).catch(() => {});
-    }
+    _inMemorySaleReturns.unshift(finalReturn);
 
     return {
       success: true,
-      data: saleReturn,
-      message: `Sales return ${saleReturn.returnNumber} recorded successfully.`
+      data: finalReturn,
+      message: `Sales return ${finalReturn.returnNumber} recorded successfully.`
     };
   },
 
   async deleteSaleReturnAsync(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    if (!checkOnline()) return { success: false, error: 'Internet connection is required. The sales return was not deleted.' };
+    const creds = getActiveSupabaseCredentials();
+    if (!creds.url || !creds.key) return { success: false, error: 'Supabase database is not configured.' };
+
+    const syncRes = await SupabaseSyncService.deleteSaleReturn(id);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to delete sales return in database.' };
+    }
+
     const idx = _inMemorySaleReturns.findIndex((sr) => sr.id === id);
     if (idx !== -1) {
       const target = _inMemorySaleReturns[idx];
@@ -1341,7 +1364,8 @@ export const StorageService = {
       updatedAt: now
     };
 
-    const syncRes = await SupabaseSyncService.syncPurchaseInvoice(updatedPurchase);
+    const reqId = purchaseData.requestId || generateUniqueRequestId(`upd_pur_${id}`);
+    const syncRes = await SupabaseSyncService.updatePurchaseInvoiceAtomic(id, updatedPurchase, reqId, targetCompId);
     if (!syncRes.success) {
       return {
         success: false,
@@ -1442,10 +1466,12 @@ export const StorageService = {
     returnData: Omit<PurchaseReturn, 'id' | 'returnNumber' | 'createdAt'> & { id?: string; returnNumber?: string },
     companyId?: string
   ): Promise<{ success: boolean; data?: PurchaseReturn; message?: string; error?: string }> {
+    if (!checkOnline()) return { success: false, error: 'Internet connection is required. The purchase return was not saved.' };
+    const creds = getActiveSupabaseCredentials();
+    if (!creds.url || !creds.key) return { success: false, error: 'Supabase database is not configured.' };
+
     const targetCompId = returnData.companyId || companyId || DEFAULT_COMPANY_ID;
     const now = new Date().toISOString();
-    const count = _inMemoryPurchaseReturns.filter((pr) => (pr.companyId || DEFAULT_COMPANY_ID) === targetCompId).length + 1;
-    const returnNumber = returnData.returnNumber || `PR-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`;
     const reqId = returnData.requestId || generateUniqueRequestId('purr');
 
     const purchaseReturn: PurchaseReturn = {
@@ -1453,21 +1479,36 @@ export const StorageService = {
       id: returnData.id || `pr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       requestId: reqId,
       companyId: targetCompId,
-      returnNumber,
+      returnNumber: returnData.returnNumber || '',
       createdAt: now,
       updatedAt: now
     };
 
+    const syncRes = await SupabaseSyncService.syncPurchaseReturn(purchaseReturn);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to save purchase return to database.' };
+    }
+
+    const finalReturn = syncRes.existingData || purchaseReturn;
+
+    if (syncRes.isDuplicate) {
+      const existsInMemory = _inMemoryPurchaseReturns.some((p) => p.id === finalReturn.id || p.requestId === finalReturn.requestId);
+      if (!existsInMemory) {
+        _inMemoryPurchaseReturns.unshift(finalReturn);
+      }
+      return { success: true, data: finalReturn, message: `Purchase return ${finalReturn.returnNumber} was already recorded.` };
+    }
+
     // Update Supplier Payable Balance if Credit return
-    if (purchaseReturn.supplierId && purchaseReturn.type === 'CREDIT') {
-      const sIdx = _inMemorySuppliers.findIndex((s) => s.id === purchaseReturn.supplierId);
+    if (finalReturn.supplierId && finalReturn.type === 'CREDIT') {
+      const sIdx = _inMemorySuppliers.findIndex((s) => s.id === finalReturn.supplierId);
       if (sIdx !== -1) {
-        _inMemorySuppliers[sIdx].payableBalance = Number((_inMemorySuppliers[sIdx].payableBalance - purchaseReturn.grandTotal).toFixed(2));
+        _inMemorySuppliers[sIdx].payableBalance = Number((_inMemorySuppliers[sIdx].payableBalance - finalReturn.grandTotal).toFixed(2));
       }
     }
 
     // Decrease product currentStock (Stock OUT)
-    (purchaseReturn.items || []).forEach((item) => {
+    (finalReturn.items || []).forEach((item) => {
       const pIdx = _inMemoryProducts.findIndex(
         (p) => p.id === item.productId || (item.productCode && p.code === item.productCode)
       );
@@ -1477,20 +1518,25 @@ export const StorageService = {
       }
     });
 
-    _inMemoryPurchaseReturns.unshift(purchaseReturn);
-
-    if (checkOnline()) {
-      SupabaseSyncService.syncPurchaseReturn(purchaseReturn).catch(() => {});
-    }
+    _inMemoryPurchaseReturns.unshift(finalReturn);
 
     return {
       success: true,
-      data: purchaseReturn,
-      message: `Purchase return ${purchaseReturn.returnNumber} recorded successfully.`
+      data: finalReturn,
+      message: `Purchase return ${finalReturn.returnNumber} recorded successfully.`
     };
   },
 
   async deletePurchaseReturnAsync(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    if (!checkOnline()) return { success: false, error: 'Internet connection is required. The purchase return was not deleted.' };
+    const creds = getActiveSupabaseCredentials();
+    if (!creds.url || !creds.key) return { success: false, error: 'Supabase database is not configured.' };
+
+    const syncRes = await SupabaseSyncService.deletePurchaseReturn(id);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to delete purchase return in database.' };
+    }
+
     const idx = _inMemoryPurchaseReturns.findIndex((pr) => pr.id === id);
     if (idx !== -1) {
       const target = _inMemoryPurchaseReturns[idx];
