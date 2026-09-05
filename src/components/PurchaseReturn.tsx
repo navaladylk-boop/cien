@@ -10,7 +10,8 @@ import {
   AlertCircle,
   X,
   Building2,
-  Package
+  Package,
+  Edit2
 } from 'lucide-react';
 import { StorageService } from '../lib/storage';
 import { PurchaseReturn, PurchaseReturnItem, Supplier, Product, PurchaseInvoice } from '../types';
@@ -29,6 +30,7 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
 
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingReturn, setEditingReturn] = useState<PurchaseReturn | null>(null);
   const [viewingReturn, setViewingReturn] = useState<PurchaseReturn | null>(null);
 
   // Form State
@@ -176,6 +178,7 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
   const calculateGrandTotal = () => Math.max(0, calculateSubtotal() - discountAmount);
 
   const resetForm = () => {
+    setEditingReturn(null);
     setSelectedSupplierId('');
     setSelectedPurchaseId('');
     setReturnType('CASH');
@@ -185,6 +188,31 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
     setDiscountAmount(0);
     setItems([createEmptyItem()]);
     setFeedback(null);
+  };
+
+  const handleOpenEditModal = (ret: PurchaseReturn) => {
+    setEditingReturn(ret);
+    setSelectedSupplierId(ret.supplierId || '');
+    setSelectedPurchaseId(ret.purchaseId || '');
+    setReturnType(ret.type || 'CASH');
+    setReturnDate(ret.date || new Date().toISOString().split('T')[0]);
+    setReason(ret.reason || 'Damaged / Defective Stock Returned to Supplier');
+    setNotes(ret.notes || '');
+    setDiscountAmount(ret.discount || ret.discountAmount || 0);
+
+    const mappedItems = (ret.items || []).map((i) => ({
+      productId: i.productId,
+      productCode: i.productCode || '',
+      productName: i.productName || 'Item',
+      unit: i.unit || 'Pcs',
+      quantity: i.quantity || 1,
+      unitCost: i.unitCost || (i as any).unitPrice || 0,
+      total: i.total || 0
+    }));
+
+    setItems(mappedItems.length > 0 ? mappedItems : [createEmptyItem()]);
+    setFeedback(null);
+    setIsModalOpen(true);
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -209,27 +237,53 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
     const subtotal = validItems.reduce((sum, i) => sum + i.total, 0);
     const grandTotal = Math.max(0, subtotal - discountAmount);
 
-    const result = await StorageService.createPurchaseReturnAsync(
-      {
-        companyId: currentCompanyId,
-        date: returnDate,
-        supplierId: selectedSupplierId,
-        supplierName: supp ? supp.name : 'Unknown Supplier',
-        purchaseId: selectedPurchaseId || undefined,
-        purchaseNumber: pur ? pur.purchaseNumber : undefined,
-        reason,
-        type: returnType,
-        items: validItems,
-        subtotal,
-        discount: discountAmount,
-        discountAmount,
-        taxAmount: 0,
-        grandTotal,
-        notes,
-        status: 'COMPLETED'
-      },
-      currentCompanyId
-    );
+    let result;
+    if (editingReturn) {
+      result = await StorageService.updatePurchaseReturnAsync(
+        editingReturn.id,
+        {
+          companyId: currentCompanyId,
+          date: returnDate,
+          supplierId: selectedSupplierId,
+          supplierName: supp ? supp.name : 'Unknown Supplier',
+          purchaseId: selectedPurchaseId || undefined,
+          purchaseNumber: pur ? pur.purchaseNumber : undefined,
+          reason,
+          type: returnType,
+          items: validItems,
+          subtotal,
+          discount: discountAmount,
+          discountAmount,
+          taxAmount: 0,
+          grandTotal,
+          notes,
+          status: 'COMPLETED'
+        },
+        currentCompanyId
+      );
+    } else {
+      result = await StorageService.createPurchaseReturnAsync(
+        {
+          companyId: currentCompanyId,
+          date: returnDate,
+          supplierId: selectedSupplierId,
+          supplierName: supp ? supp.name : 'Unknown Supplier',
+          purchaseId: selectedPurchaseId || undefined,
+          purchaseNumber: pur ? pur.purchaseNumber : undefined,
+          reason,
+          type: returnType,
+          items: validItems,
+          subtotal,
+          discount: discountAmount,
+          discountAmount,
+          taxAmount: 0,
+          grandTotal,
+          notes,
+          status: 'COMPLETED'
+        },
+        currentCompanyId
+      );
+    }
 
     setIsSaving(false);
     if (result.success) {
@@ -243,8 +297,12 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
 
   const handleDelete = async (id: string, returnNo: string) => {
     if (window.confirm(`Are you sure you want to void Purchase Return ${returnNo}? Stock will be reversed.`)) {
-      await StorageService.deletePurchaseReturnAsync(id);
-      loadData();
+      const res = await StorageService.deletePurchaseReturnAsync(id, currentCompanyId);
+      if (res.success) {
+        loadData();
+      } else {
+        alert(res.error || 'Failed to void purchase return.');
+      }
     }
   };
 
@@ -357,6 +415,13 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
                           <Eye className="w-4 h-4" />
                         </button>
                         <button
+                          onClick={() => handleOpenEditModal(ret)}
+                          title="Edit Purchase Return"
+                          className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
                           onClick={() => handleDelete(ret.id, ret.returnNumber)}
                           title="Void Purchase Return"
                           className="p-1.5 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded-md transition-colors"
@@ -392,7 +457,9 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-xl">
               <div className="flex items-center gap-2">
                 <RotateCcw className="w-5 h-5 text-amber-600" />
-                <h2 className="text-lg font-bold text-slate-800">New Purchase Return (Stock OUT)</h2>
+                <h2 className="text-lg font-bold text-slate-800">
+                  {editingReturn ? `Edit Purchase Return (${editingReturn.returnNumber})` : 'New Purchase Return (Stock OUT)'}
+                </h2>
               </div>
               <button
                 onClick={() => setIsModalOpen(false)}
@@ -652,7 +719,7 @@ export const PurchaseReturnManagement: React.FC<PurchaseReturnProps> = ({ curren
                   disabled={isSaving}
                   className="px-5 py-2 bg-amber-600 text-white font-medium text-xs rounded-lg hover:bg-amber-700 disabled:opacity-50"
                 >
-                  {isSaving ? 'Processing Return...' : 'Save Purchase Return'}
+                  {isSaving ? (editingReturn ? 'Updating...' : 'Processing Return...') : (editingReturn ? 'Update Purchase Return' : 'Save Purchase Return')}
                 </button>
               </div>
             </form>

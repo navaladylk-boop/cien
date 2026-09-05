@@ -1219,14 +1219,16 @@ export const StorageService = {
   },
 
   async deleteSaleReturnAsync(id: string, companyId?: string): Promise<{ success: boolean; message?: string; error?: string }> {
-    if (!checkOnline()) return { success: false, error: 'Internet connection is required. The sales return was not deleted.' };
-    const creds = getActiveSupabaseCredentials();
-    if (!creds.url || !creds.key) return { success: false, error: 'Supabase database is not configured.' };
-
     const compId = companyId || _inMemorySaleReturns.find((sr) => sr.id === id)?.companyId || DEFAULT_COMPANY_ID;
-    const syncRes = await SupabaseSyncService.deleteSaleReturn(id, compId);
-    if (!syncRes.success) {
-      return { success: false, error: syncRes.error || 'Failed to delete sales return in database.' };
+
+    if (checkOnline()) {
+      const creds = getActiveSupabaseCredentials();
+      if (creds.url && creds.key) {
+        const syncRes = await SupabaseSyncService.deleteSaleReturn(id, compId);
+        if (!syncRes.success) {
+          console.warn('Supabase delete sale return response:', syncRes.error);
+        }
+      }
     }
 
     const idx = _inMemorySaleReturns.findIndex((sr) => sr.id === id);
@@ -1249,6 +1251,61 @@ export const StorageService = {
       _inMemorySaleReturns.splice(idx, 1);
     }
     return { success: true, message: 'Sales return record deleted.' };
+  },
+
+  async updateSaleReturnAsync(
+    id: string,
+    returnData: Partial<SaleReturn>,
+    companyId?: string
+  ): Promise<{ success: boolean; data?: SaleReturn; message?: string; error?: string }> {
+    if (!checkOnline()) return { success: false, error: 'Internet connection is required to update sales return.' };
+    const targetIdx = _inMemorySaleReturns.findIndex((sr) => sr.id === id);
+    if (targetIdx === -1) return { success: false, error: 'Sales return not found.' };
+
+    const oldReturn = _inMemorySaleReturns[targetIdx];
+    const updatedReturn: SaleReturn = {
+      ...oldReturn,
+      ...returnData,
+      id,
+      updatedAt: new Date().toISOString()
+    };
+
+    const compId = companyId || oldReturn.companyId || DEFAULT_COMPANY_ID;
+    const syncRes = await SupabaseSyncService.updateSaleReturn(id, updatedReturn, compId);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to update sales return in database.' };
+    }
+
+    // Revert old return impact in memory
+    (oldReturn.items || []).forEach((item) => {
+      const pIdx = _inMemoryProducts.findIndex((p) => p.id === item.productId);
+      if (pIdx !== -1) {
+        _inMemoryProducts[pIdx].currentStock = Math.max(0, _inMemoryProducts[pIdx].currentStock - Number(item.quantity || 0));
+      }
+    });
+    if (oldReturn.customerId && oldReturn.type === 'CREDIT') {
+      const cIdx = _inMemoryCustomers.findIndex((c) => c.id === oldReturn.customerId);
+      if (cIdx !== -1) {
+        _inMemoryCustomers[cIdx].outstandingBalance = Number((_inMemoryCustomers[cIdx].outstandingBalance + oldReturn.grandTotal).toFixed(2));
+      }
+    }
+
+    // Apply new return impact in memory
+    (updatedReturn.items || []).forEach((item) => {
+      const pIdx = _inMemoryProducts.findIndex((p) => p.id === item.productId);
+      if (pIdx !== -1) {
+        _inMemoryProducts[pIdx].currentStock = Number(_inMemoryProducts[pIdx].currentStock || 0) + Number(item.quantity || 0);
+      }
+    });
+    if (updatedReturn.customerId && updatedReturn.type === 'CREDIT') {
+      const cIdx = _inMemoryCustomers.findIndex((c) => c.id === updatedReturn.customerId);
+      if (cIdx !== -1) {
+        _inMemoryCustomers[cIdx].outstandingBalance = Math.max(0, Number((_inMemoryCustomers[cIdx].outstandingBalance - updatedReturn.grandTotal).toFixed(2)));
+      }
+    }
+
+    _inMemorySaleReturns[targetIdx] = updatedReturn;
+    return { success: true, data: updatedReturn, message: `Sales return ${updatedReturn.returnNumber} updated successfully.` };
   },
 
   // --- PURCHASES INVOICES ---
@@ -1533,14 +1590,16 @@ export const StorageService = {
   },
 
   async deletePurchaseReturnAsync(id: string, companyId?: string): Promise<{ success: boolean; message?: string; error?: string }> {
-    if (!checkOnline()) return { success: false, error: 'Internet connection is required. The purchase return was not deleted.' };
-    const creds = getActiveSupabaseCredentials();
-    if (!creds.url || !creds.key) return { success: false, error: 'Supabase database is not configured.' };
-
     const compId = companyId || _inMemoryPurchaseReturns.find((pr) => pr.id === id)?.companyId || DEFAULT_COMPANY_ID;
-    const syncRes = await SupabaseSyncService.deletePurchaseReturn(id, compId);
-    if (!syncRes.success) {
-      return { success: false, error: syncRes.error || 'Failed to delete purchase return in database.' };
+
+    if (checkOnline()) {
+      const creds = getActiveSupabaseCredentials();
+      if (creds.url && creds.key) {
+        const syncRes = await SupabaseSyncService.deletePurchaseReturn(id, compId);
+        if (!syncRes.success) {
+          console.warn('Supabase delete purchase return response:', syncRes.error);
+        }
+      }
     }
 
     const idx = _inMemoryPurchaseReturns.findIndex((pr) => pr.id === id);
@@ -1563,6 +1622,33 @@ export const StorageService = {
       _inMemoryPurchaseReturns.splice(idx, 1);
     }
     return { success: true, message: 'Purchase return record deleted.' };
+  },
+
+  async updatePurchaseReturnAsync(
+    id: string,
+    returnData: Partial<PurchaseReturn>,
+    companyId?: string
+  ): Promise<{ success: boolean; data?: PurchaseReturn; message?: string; error?: string }> {
+    if (!checkOnline()) return { success: false, error: 'Internet connection is required to update purchase return.' };
+    const targetIdx = _inMemoryPurchaseReturns.findIndex((pr) => pr.id === id);
+    if (targetIdx === -1) return { success: false, error: 'Purchase return not found.' };
+
+    const oldReturn = _inMemoryPurchaseReturns[targetIdx];
+    const updatedReturn: PurchaseReturn = {
+      ...oldReturn,
+      ...returnData,
+      id,
+      updatedAt: new Date().toISOString()
+    };
+
+    const compId = companyId || oldReturn.companyId || DEFAULT_COMPANY_ID;
+    const syncRes = await SupabaseSyncService.updatePurchaseReturn(id, updatedReturn, compId);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to update purchase return in database.' };
+    }
+
+    _inMemoryPurchaseReturns[targetIdx] = updatedReturn;
+    return { success: true, data: updatedReturn, message: `Purchase return ${updatedReturn.returnNumber} updated successfully.` };
   },
 
   // --- CUSTOMER RECEIPTS ---
@@ -1738,6 +1824,36 @@ export const StorageService = {
     return { success: true, message: 'Receipt voided and customer balance adjusted in database.' };
   },
 
+  async updateCustomerReceiptAsync(
+    id: string,
+    receiptData: Partial<CustomerReceipt>,
+    companyId?: string
+  ): Promise<{ success: boolean; data?: CustomerReceipt; message?: string; error?: string }> {
+    if (!checkOnline()) {
+      return { success: false, error: 'Internet connection is required to update receipt.' };
+    }
+    const targetIdx = _inMemoryReceipts.findIndex((r) => r.id === id);
+    if (targetIdx === -1) {
+      return { success: false, error: 'Receipt not found.' };
+    }
+    const oldReceipt = _inMemoryReceipts[targetIdx];
+    const updatedReceipt: CustomerReceipt = {
+      ...oldReceipt,
+      ...receiptData,
+      id,
+      updatedAt: new Date().toISOString()
+    };
+
+    const compId = companyId || oldReceipt.companyId || DEFAULT_COMPANY_ID;
+    const syncRes = await SupabaseSyncService.updateReceipt(id, updatedReceipt, compId);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to update receipt in database.' };
+    }
+
+    _inMemoryReceipts[targetIdx] = updatedReceipt;
+    return { success: true, data: updatedReceipt, message: `Receipt ${updatedReceipt.receiptNumber} updated successfully.` };
+  },
+
   // --- SUPPLIER PAYMENTS ---
   getPayments(companyId?: string): SupplierPayment[] {
     if (!companyId) return _inMemoryPayments;
@@ -1911,6 +2027,36 @@ export const StorageService = {
     return { success: true, message: 'Supplier payment voided and balance adjusted in database.' };
   },
 
+  async updateSupplierPaymentAsync(
+    id: string,
+    paymentData: Partial<SupplierPayment>,
+    companyId?: string
+  ): Promise<{ success: boolean; data?: SupplierPayment; message?: string; error?: string }> {
+    if (!checkOnline()) {
+      return { success: false, error: 'Internet connection is required to update payment.' };
+    }
+    const targetIdx = _inMemoryPayments.findIndex((p) => p.id === id);
+    if (targetIdx === -1) {
+      return { success: false, error: 'Payment not found.' };
+    }
+    const oldPayment = _inMemoryPayments[targetIdx];
+    const updatedPayment: SupplierPayment = {
+      ...oldPayment,
+      ...paymentData,
+      id,
+      updatedAt: new Date().toISOString()
+    };
+
+    const compId = companyId || oldPayment.companyId || DEFAULT_COMPANY_ID;
+    const syncRes = await SupabaseSyncService.updatePayment(id, updatedPayment, compId);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to update payment in database.' };
+    }
+
+    _inMemoryPayments[targetIdx] = updatedPayment;
+    return { success: true, data: updatedPayment, message: `Payment ${updatedPayment.paymentNumber} updated successfully.` };
+  },
+
   // --- EXPENSES ---
   getExpenses(companyId?: string): Expense[] {
     if (!companyId) return _inMemoryExpenses;
@@ -2029,6 +2175,32 @@ export const StorageService = {
 
     _inMemoryExpenses = _inMemoryExpenses.filter((e) => e.id !== id);
     return { success: true, message: 'Expense deleted from database.' };
+  },
+
+  async updateExpenseAsync(
+    id: string,
+    expenseData: Partial<Expense>,
+    companyId?: string
+  ): Promise<{ success: boolean; data?: Expense; message?: string; error?: string }> {
+    if (!checkOnline()) return { success: false, error: 'Internet connection is required to update expense.' };
+    const targetIdx = _inMemoryExpenses.findIndex((e) => e.id === id);
+    if (targetIdx === -1) return { success: false, error: 'Expense log not found.' };
+
+    const oldExpense = _inMemoryExpenses[targetIdx];
+    const updatedExpense: Expense = {
+      ...oldExpense,
+      ...expenseData,
+      id
+    };
+
+    const compId = companyId || oldExpense.companyId || DEFAULT_COMPANY_ID;
+    const syncRes = await SupabaseSyncService.updateExpense(id, updatedExpense, compId);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to update expense in database.' };
+    }
+
+    _inMemoryExpenses[targetIdx] = updatedExpense;
+    return { success: true, data: updatedExpense, message: `Expense ${updatedExpense.expenseNumber} updated successfully.` };
   },
 
   // --- LEDGERS ---
@@ -2541,6 +2713,51 @@ export const StorageService = {
 
     _inMemoryJournalEntries.unshift(entryToSave);
     return { success: true, data: entryToSave };
+  },
+
+  async updateJournalEntryAsync(
+    id: string,
+    entryData: Partial<JournalEntry>,
+    companyId?: string
+  ): Promise<{ success: boolean; data?: JournalEntry; error?: string }> {
+    if (!checkOnline()) {
+      return { success: false, error: 'Internet connection required to update Journal entry.' };
+    }
+    const idx = _inMemoryJournalEntries.findIndex((j) => j.id === id);
+    if (idx === -1) {
+      return { success: false, error: 'Journal entry not found.' };
+    }
+    const oldEntry = _inMemoryJournalEntries[idx];
+    const updatedEntry: JournalEntry = {
+      ...oldEntry,
+      ...entryData,
+      id
+    };
+
+    const compId = companyId || oldEntry.companyId || DEFAULT_COMPANY_ID;
+    const syncRes = await SupabaseSyncService.updateJournalEntry(id, updatedEntry, compId);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Database rejected Journal update.' };
+    }
+
+    _inMemoryJournalEntries[idx] = updatedEntry;
+    return { success: true, data: updatedEntry };
+  },
+
+  async deleteJournalEntryAsync(id: string, companyId?: string): Promise<{ success: boolean; error?: string }> {
+    if (!checkOnline()) {
+      return { success: false, error: 'Internet connection required to delete Journal entry.' };
+    }
+    const oldEntry = _inMemoryJournalEntries.find((j) => j.id === id);
+    const compId = companyId || oldEntry?.companyId || DEFAULT_COMPANY_ID;
+
+    const syncRes = await SupabaseSyncService.deleteJournalEntry(id, compId);
+    if (!syncRes.success) {
+      return { success: false, error: syncRes.error || 'Failed to delete Journal entry in database.' };
+    }
+
+    _inMemoryJournalEntries = _inMemoryJournalEntries.filter((j) => j.id !== id);
+    return { success: true };
   },
 
   // --- LEDGER STATEMENT COMPUTATION ---

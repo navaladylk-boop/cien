@@ -19,6 +19,7 @@ import {
   Layers,
   ChevronRight,
   Eye,
+  Pencil,
   X,
   Check,
   Clock,
@@ -104,6 +105,7 @@ export const Payments: React.FC<PaymentsProps> = ({
   } | null>(null);
 
   // --- Customer Receipt Modal State ---
+  const [editingReceipt, setEditingReceipt] = useState<CustomerReceipt | null>(null);
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
   const [receiptDate, setReceiptDate] = useState(new Date().toISOString().split('T')[0]);
   const [receiptCustomerId, setReceiptCustomerId] = useState('');
@@ -119,6 +121,7 @@ export const Payments: React.FC<PaymentsProps> = ({
   const [invoiceAllocations, setInvoiceAllocations] = useState<Record<string, number>>({});
 
   // --- Supplier Payment Modal State ---
+  const [editingPayment, setEditingPayment] = useState<SupplierPayment | null>(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [paymentSupplierId, setPaymentSupplierId] = useState('');
@@ -134,6 +137,7 @@ export const Payments: React.FC<PaymentsProps> = ({
   const [billAllocations, setBillAllocations] = useState<Record<string, number>>({});
 
   // --- Expense Modal State ---
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [expenseDate, setExpenseDate] = useState(new Date().toISOString().split('T')[0]);
   const [expenseCategory, setExpenseCategory] = useState('Electricity / Utilities');
@@ -141,6 +145,41 @@ export const Payments: React.FC<PaymentsProps> = ({
   const [expensePaidTo, setExpensePaidTo] = useState('');
   const [expenseMode, setExpenseMode] = useState<'CASH' | 'BANK_TRANSFER'>('CASH');
   const [expenseNotes, setExpenseNotes] = useState('');
+
+  const handleOpenEditReceipt = (r: CustomerReceipt) => {
+    setEditingReceipt(r);
+    setReceiptDate(r.date);
+    setReceiptCustomerId(r.customerId);
+    setReceiptAmount(String(r.amount));
+    setReceiptMode((r.paymentMode as any) || 'CASH');
+    setReceiptRef(r.referenceNo || '');
+    setReceiptNotes(r.notes || '');
+    setReceiptBankName(r.bankName || '');
+    setIsReceiptModalOpen(true);
+  };
+
+  const handleOpenEditPayment = (p: SupplierPayment) => {
+    setEditingPayment(p);
+    setPaymentDate(p.date);
+    setPaymentSupplierId(p.supplierId);
+    setPaymentAmount(String(p.amount));
+    setPaymentMode((p.paymentMode as any) || 'CASH');
+    setPaymentRef(p.referenceNo || '');
+    setPaymentNotes(p.notes || '');
+    setPaymentBankName(p.bankName || '');
+    setIsPaymentModalOpen(true);
+  };
+
+  const handleOpenEditExpense = (e: Expense) => {
+    setEditingExpense(e);
+    setExpenseDate(e.date);
+    setExpenseCategory(e.category);
+    setExpenseAmount(String(e.amount));
+    setExpensePaidTo(e.paidTo || '');
+    setExpenseMode((e.paymentMode as any) || 'CASH');
+    setExpenseNotes(e.notes || '');
+    setIsExpenseModalOpen(true);
+  };
 
   // Pending Sales for selected customer in Receipt modal
   const customerPendingSales = React.useMemo(() => {
@@ -317,6 +356,34 @@ export const Payments: React.FC<PaymentsProps> = ({
 
     const cust = customers.find((c) => c.id === receiptCustomerId);
 
+    if (editingReceipt) {
+      setIsSubmittingReceipt(true);
+      try {
+        const res = await StorageService.updateCustomerReceiptAsync(editingReceipt.id, {
+          date: receiptDate || new Date().toISOString().split('T')[0],
+          customerId: receiptCustomerId,
+          customerName: cust ? cust.name : 'Customer',
+          amount: amt,
+          paymentMode: receiptMode,
+          referenceNo: receiptChequeNo || receiptRef,
+          bankName: receiptBankName,
+          notes: receiptNotes
+        });
+        if (res.success) {
+          showToast('success', res.message || `Receipt ${editingReceipt.receiptNumber} updated.`);
+          setIsReceiptModalOpen(false);
+          setEditingReceipt(null);
+        } else {
+          showToast('error', res.error || 'Failed to update receipt.');
+        }
+      } catch (err: any) {
+        showToast('error', err?.message || 'Failed to update receipt.');
+      } finally {
+        setIsSubmittingReceipt(false);
+      }
+      return;
+    }
+
     // Build structured allocations
     const allocations: InvoiceAllocation[] = [];
     for (const [invId, rawAmt] of Object.entries(invoiceAllocations)) {
@@ -415,6 +482,34 @@ export const Payments: React.FC<PaymentsProps> = ({
 
     const supp = suppliers.find((s) => s.id === paymentSupplierId);
 
+    if (editingPayment) {
+      setIsSubmittingPayment(true);
+      try {
+        const res = await StorageService.updateSupplierPaymentAsync(editingPayment.id, {
+          date: paymentDate || new Date().toISOString().split('T')[0],
+          supplierId: paymentSupplierId,
+          supplierName: supp ? supp.name : 'Supplier',
+          amount: amt,
+          paymentMode: paymentMode,
+          referenceNo: paymentChequeNo || paymentRef,
+          bankName: paymentBankName,
+          notes: paymentNotes
+        });
+        if (res.success) {
+          showToast('success', res.message || `Payment ${editingPayment.paymentNumber} updated.`);
+          setIsPaymentModalOpen(false);
+          setEditingPayment(null);
+        } else {
+          showToast('error', res.error || 'Failed to update payment.');
+        }
+      } catch (err: any) {
+        showToast('error', err?.message || 'Failed to update payment.');
+      } finally {
+        setIsSubmittingPayment(false);
+      }
+      return;
+    }
+
     // Build structured allocations
     const allocations: BillAllocation[] = [];
     for (const [purId, rawAmt] of Object.entries(billAllocations)) {
@@ -496,6 +591,32 @@ export const Payments: React.FC<PaymentsProps> = ({
       return;
     }
 
+    if (editingExpense) {
+      setIsSubmittingExpense(true);
+      try {
+        const res = await StorageService.updateExpenseAsync(editingExpense.id, {
+          date: expenseDate || new Date().toISOString().split('T')[0],
+          category: expenseCategory,
+          amount: amt,
+          paidTo: expensePaidTo,
+          paymentMode: expenseMode,
+          notes: expenseNotes
+        });
+        if (res.success) {
+          showToast('success', res.message || 'Expense updated successfully.');
+          setIsExpenseModalOpen(false);
+          setEditingExpense(null);
+        } else {
+          showToast('error', res.error || 'Failed to update expense.');
+        }
+      } catch (err: any) {
+        showToast('error', err?.message || 'Failed to update expense.');
+      } finally {
+        setIsSubmittingExpense(false);
+      }
+      return;
+    }
+
     setIsSubmittingExpense(true);
     try {
       const exp = await onCreateExpense({
@@ -535,6 +656,7 @@ export const Payments: React.FC<PaymentsProps> = ({
           <button
             id="btn-new-receipt"
             onClick={() => {
+              setEditingReceipt(null);
               setReceiptDate(new Date().toISOString().split('T')[0]);
               setReceiptCustomerId(customers[0]?.id || '');
               setReceiptAmount('');
@@ -557,6 +679,7 @@ export const Payments: React.FC<PaymentsProps> = ({
           <button
             id="btn-new-payment"
             onClick={() => {
+              setEditingPayment(null);
               setPaymentDate(new Date().toISOString().split('T')[0]);
               setPaymentSupplierId(suppliers[0]?.id || '');
               setPaymentAmount('');
@@ -579,6 +702,7 @@ export const Payments: React.FC<PaymentsProps> = ({
           <button
             id="btn-new-expense"
             onClick={() => {
+              setEditingExpense(null);
               setExpenseDate(new Date().toISOString().split('T')[0]);
               setExpenseAmount('');
               setIsExpenseModalOpen(true);
@@ -689,6 +813,13 @@ export const Payments: React.FC<PaymentsProps> = ({
                           >
                             <Eye className="w-4 h-4" />
                           </button>
+                          <button
+                            onClick={() => handleOpenEditReceipt(r)}
+                            className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-amber-600 rounded-lg cursor-pointer"
+                            title="Edit Receipt Voucher"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
                           {onDeleteReceipt && (
                             <button
                               onClick={() => setDeleteConfirm({ id: r.id, type: 'RECEIPT' })}
@@ -777,6 +908,13 @@ export const Payments: React.FC<PaymentsProps> = ({
                           >
                             <Eye className="w-4 h-4" />
                           </button>
+                          <button
+                            onClick={() => handleOpenEditPayment(p)}
+                            className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-amber-600 rounded-lg cursor-pointer"
+                            title="Edit Payment Voucher"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
                           {onDeletePayment && (
                             <button
                               onClick={() => setDeleteConfirm({ id: p.id, type: 'PAYMENT' })}
@@ -839,15 +977,24 @@ export const Payments: React.FC<PaymentsProps> = ({
                         -{settings.currencySymbol} {e.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                       </td>
                       <td className="p-4 text-center">
-                        {onDeleteExpense && (
+                        <div className="flex items-center justify-center gap-1.5">
                           <button
-                            onClick={() => setDeleteConfirm({ id: e.id, type: 'EXPENSE' })}
-                            className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg cursor-pointer"
-                            title="Delete Expense Log"
+                            onClick={() => handleOpenEditExpense(e)}
+                            className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-amber-600 rounded-lg cursor-pointer"
+                            title="Edit Expense Log"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            <Pencil className="w-4 h-4" />
                           </button>
-                        )}
+                          {onDeleteExpense && (
+                            <button
+                              onClick={() => setDeleteConfirm({ id: e.id, type: 'EXPENSE' })}
+                              className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg cursor-pointer"
+                              title="Delete Expense Log"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

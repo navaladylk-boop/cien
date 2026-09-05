@@ -7,17 +7,12 @@ import {
   EyeOff,
   Sparkles,
   ArrowRight,
-  ArrowLeft,
   ShieldAlert,
   Lock,
   RefreshCw,
   ServerCrash,
   Loader2,
-  Building2,
-  Search,
-  CheckCircle2,
-  MapPin,
-  FileText
+  Building2
 } from 'lucide-react';
 import { AuthService } from '../lib/auth';
 import { StorageService } from '../lib/storage';
@@ -34,10 +29,9 @@ type AuthStatus = 'CHECKING' | 'LOGIN' | 'FIRST_ADMIN_SETUP' | 'CONNECTION_ERROR
 export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
   const [authStatus, setAuthStatus] = useState<AuthStatus>('CHECKING');
   const [companies, setCompanies] = useState<Company[]>([]);
-  const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
-  const [companySearch, setCompanySearch] = useState<string>('');
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string>('');
 
-  // Credentials
+  // Credentials - Explicitly managed, never saved or prefilled
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
@@ -52,9 +46,11 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
   const verifyAccountStatus = async () => {
     setAuthStatus('CHECKING');
     setErrorMessage(null);
+    setUsername('');
+    setPassword('');
 
     try {
-      // 1. Fetch all available companies (always sync latest list from Supabase/storage)
+      // Fetch all available companies (always sync latest list from Supabase/storage)
       let allComps: Company[] = [];
       const remoteComps = await SupabaseSyncService.fetchAllRemoteCompanies();
       if (remoteComps && remoteComps.length > 0) {
@@ -65,7 +61,13 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
       }
       setCompanies(allComps);
 
-      // 2. Verify account status
+      if (allComps.length === 1) {
+        setSelectedCompanyId(allComps[0].id);
+      } else {
+        setSelectedCompanyId('');
+      }
+
+      // Verify account status
       const result = await AuthService.checkAccountStatus();
       if (result.status === 'USERS_EXIST') {
         setAuthStatus('LOGIN');
@@ -88,30 +90,43 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
 
   useEffect(() => {
     verifyAccountStatus();
-  }, []);
-
-  const handleSelectCompany = (comp: Company) => {
-    setSelectedCompany(comp);
-    setErrorMessage(null);
-  };
-
-  const handleBackToCompanies = () => {
-    setSelectedCompany(null);
-    setErrorMessage(null);
+    // Clear credentials on mount
+    setUsername('');
     setPassword('');
-  };
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+
+    if (!selectedCompanyId && companies.length > 0) {
+      const msg = 'Please select a company.';
+      setErrorMessage(msg);
+      showToast('error', msg);
+      return;
+    }
+
+    if (!username.trim() || !password) {
+      const msg = 'Please enter both username and password.';
+      setErrorMessage(msg);
+      showToast('error', msg);
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const session = await AuthService.login(username, password, selectedCompany?.id);
+      const session = await AuthService.login(username.trim(), password, selectedCompanyId || undefined);
+      
+      // Clear inputs immediately
+      setUsername('');
+      setPassword('');
+      
       showToast('success', `Welcome, ${session.user.fullName || session.user.username}!`);
       onLoginSuccess(session);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Login failed. Please check credentials.';
+      setPassword(''); // Clear password on failure
       setErrorMessage(msg);
       showToast('error', msg);
     } finally {
@@ -140,6 +155,8 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
     setLoading(true);
     try {
       const session = await AuthService.setupFirstAdmin(adminPassword, adminFullName);
+      setAdminPassword('');
+      setConfirmPassword('');
       showToast('success', 'Administrator account created successfully! Welcome to BUSY UFO.');
       onLoginSuccess(session);
     } catch (err: unknown) {
@@ -151,15 +168,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
     }
   };
 
-  const filteredCompanies = companies.filter((c) => {
-    const q = companySearch.toLowerCase();
-    return (
-      c.companyName.toLowerCase().includes(q) ||
-      c.shortName.toLowerCase().includes(q) ||
-      c.city.toLowerCase().includes(q)
-    );
-  });
-
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center p-4 sm:p-6 relative overflow-hidden selection:bg-yellow-400 selection:text-slate-900">
       {/* Background Accent Grids */}
@@ -168,7 +176,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
       <div className="absolute -bottom-32 -left-32 w-96 h-96 bg-yellow-500/10 rounded-full blur-3xl pointer-events-none" />
 
       {/* Main Login Card */}
-      <div className={`w-full ${selectedCompany || authStatus !== 'LOGIN' ? 'max-w-md' : 'max-w-xl'} bg-white rounded-3xl shadow-2xl border border-slate-200/80 overflow-hidden relative z-10 animate-in fade-in zoom-in-95 duration-200 transition-all`}>
+      <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200/80 overflow-hidden relative z-10 animate-in fade-in zoom-in-95 duration-200 transition-all">
         {/* Brand Banner Header */}
         <div className="bg-[#1D4ED8] p-6 sm:p-7 text-white flex items-center justify-between border-b border-blue-600">
           <div className="flex items-center space-x-3.5">
@@ -203,9 +211,9 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
                 <Loader2 className="w-7 h-7 animate-spin" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-slate-900">Loading companies & users...</h3>
+                <h3 className="text-lg font-bold text-slate-900">Loading system environment...</h3>
                 <p className="text-xs text-slate-500 mt-1">
-                  Connecting to secure database to initialize environment...
+                  Connecting to secure database to initialize authentication...
                 </p>
               </div>
             </div>
@@ -260,7 +268,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
                 </div>
               )}
 
-              <form onSubmit={handleFirstAdminSetup} className="space-y-4">
+              <form onSubmit={handleFirstAdminSetup} className="space-y-4" autoComplete="off">
                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800 flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0" />
                   <span>Default Username is fixed as <strong>admin</strong>.</span>
@@ -304,6 +312,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required
+                      autoComplete="new-password"
                       placeholder="Enter strong password (min 4 chars)"
                       value={adminPassword}
                       onChange={(e) => setAdminPassword(e.target.value)}
@@ -329,6 +338,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required
+                      autoComplete="new-password"
                       placeholder="Re-enter password"
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
@@ -349,192 +359,141 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, showToast }) => {
             </div>
           )}
 
-          {/* 4. COMPANY SELECTION OR COMPANY-SPECIFIC LOGIN */}
+          {/* 4. UNIFIED LOGIN FORM */}
           {authStatus === 'LOGIN' && (
-            <>
-              {!selectedCompany ? (
-                /* STEP 1: SELECT A COMPANY */
-                <div className="space-y-4">
-                  <div>
-                    <h2 className="text-xl font-extrabold text-slate-900 flex items-center gap-2">
-                      <Building2 className="w-5 h-5 text-blue-600" />
-                      <span>Select Company</span>
-                    </h2>
-                    <p className="text-xs text-slate-500 mt-1">
-                      Choose your company to log in with your company-specific user credentials.
-                    </p>
-                  </div>
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-xl font-extrabold text-slate-900 flex items-center gap-2">
+                  <Lock className="w-5 h-5 text-blue-600" />
+                  <span>CIEN ERP Login</span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  Select your company and enter your credentials to log in.
+                </p>
+              </div>
 
-                  {companies.length > 2 && (
-                    <div className="relative">
-                      <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        placeholder="Search company name, code or city..."
-                        value={companySearch}
-                        onChange={(e) => setCompanySearch(e.target.value)}
-                        className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-hidden"
-                      />
-                    </div>
-                  )}
-
-                  <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                    {filteredCompanies.map((comp) => (
-                      <button
-                        key={comp.id}
-                        type="button"
-                        onClick={() => handleSelectCompany(comp)}
-                        className="w-full text-left p-4 rounded-2xl border border-slate-200 hover:border-blue-500 hover:bg-blue-50/50 hover:shadow-md transition-all duration-150 group cursor-pointer flex items-center justify-between"
-                      >
-                        <div className="flex items-start gap-3.5">
-                          <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center font-black font-mono text-sm shrink-0 group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                            {comp.shortName || 'CO'}
-                          </div>
-                          <div>
-                            <h3 className="text-sm font-bold text-slate-900 group-hover:text-blue-700 transition-colors">
-                              {comp.companyName}
-                            </h3>
-                            <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5 font-medium">
-                              <span className="flex items-center gap-1">
-                                <MapPin className="w-3 h-3 text-slate-400" />
-                                {comp.city || 'Colombo'}
-                              </span>
-                              {comp.taxRegistrationNo && (
-                                <span className="font-mono text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">
-                                  {comp.taxRegistrationNo}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <ArrowRight className="w-4 h-4 text-slate-300 group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all shrink-0" />
-                      </button>
-                    ))}
-
-                    {filteredCompanies.length === 0 && (
-                      <div className="text-center py-6 text-xs text-slate-400">
-                        No companies found matching "{companySearch}".
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                /* STEP 2: COMPANY-SPECIFIC LOGIN FORM */
-                <div className="space-y-4">
-                  {/* Selected Company Banner */}
-                  <div className="bg-blue-50/80 border border-blue-200/80 rounded-2xl p-3.5 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-black font-mono text-xs shadow-xs shrink-0">
-                        {selectedCompany.shortName || 'CO'}
-                      </div>
-                      <div>
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 block leading-none">
-                          Company
-                        </span>
-                        <h3 className="text-sm font-black text-slate-900 leading-tight">
-                          {selectedCompany.companyName}
-                        </h3>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleBackToCompanies}
-                      className="flex items-center gap-1 text-xs font-bold text-blue-700 hover:text-blue-800 bg-white hover:bg-blue-100 px-2.5 py-1.5 rounded-xl border border-blue-200 transition-colors cursor-pointer shadow-2xs shrink-0"
-                      title="Switch to another company"
-                    >
-                      <ArrowLeft className="w-3.5 h-3.5" />
-                      <span>Change</span>
-                    </button>
-                  </div>
-
-                  <div>
-                    <h2 className="text-xl font-extrabold text-slate-900">
-                      Sign In
-                    </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Enter User ID and Password for {selectedCompany.companyName}.
-                    </p>
-                  </div>
-
-                  {errorMessage && (
-                    <div className="bg-rose-50 border border-rose-200 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-rose-800 animate-in fade-in">
-                      <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                      <div className="flex-1 font-medium">{errorMessage}</div>
-                    </div>
-                  )}
-
-                  <form onSubmit={handleLogin} className="space-y-4" autoComplete="off">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                        User ID / Username
-                      </label>
-                      <div className="relative">
-                        <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                        <input
-                          type="text"
-                          required
-                          autoFocus
-                          autoComplete="off"
-                          placeholder="e.g. admin or sales01"
-                          value={username}
-                          onChange={(e) => setUsername(e.target.value)}
-                          className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm font-medium focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-hidden"
-                        />
-                      </div>
-                      <span className="text-[10px] text-slate-400 mt-1 block">
-                        User ID is case-insensitive.
-                      </span>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                          Password / Passcode
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => setShowPassword(!showPassword)}
-                          className="text-[11px] text-blue-600 hover:text-blue-700 font-bold flex items-center gap-1 cursor-pointer"
-                        >
-                          {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                          <span>{showPassword ? 'Hide' : 'Show'}</span>
-                        </button>
-                      </div>
-                      <div className="relative">
-                        <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                        <input
-                          type={showPassword ? 'text' : 'password'}
-                          required
-                          autoComplete="new-password"
-                          placeholder="Enter your password"
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          className="w-full pl-10 pr-11 py-2.5 rounded-xl border border-slate-200 text-sm font-mono focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-hidden"
-                        />
-                      </div>
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={loading}
-                      className="w-full mt-2 flex items-center justify-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 px-4 rounded-xl shadow-md transition-all cursor-pointer disabled:opacity-50 text-sm"
-                    >
-                      <span>{loading ? 'Verifying Authorization...' : 'LOGIN'}</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
-                  </form>
+              {errorMessage && (
+                <div className="bg-rose-50 border border-rose-200 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-rose-800 animate-in fade-in">
+                  <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 font-medium">{errorMessage}</div>
                 </div>
               )}
-            </>
+
+              <div className="space-y-4">
+                {/* 1. COMPANY SELECTION */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Company
+                  </label>
+                  <div className="relative">
+                    <Building2 className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <select
+                      value={selectedCompanyId}
+                      onChange={(e) => {
+                        setSelectedCompanyId(e.target.value);
+                        setErrorMessage(null);
+                      }}
+                      className="w-full pl-10 pr-8 py-2.5 rounded-xl border border-slate-200 text-sm font-semibold bg-slate-50 focus:bg-white focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-hidden appearance-none cursor-pointer text-slate-900"
+                    >
+                      <option value="">[ Select Company ]</option>
+                      {companies.map((comp) => (
+                        <option key={comp.id} value={comp.id}>
+                          {comp.companyName} {comp.shortName ? `(${comp.shortName})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-xs">
+                      ▼
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. USERNAME */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Username
+                  </label>
+                  <div className="relative">
+                    <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      name="username"
+                      id="username"
+                      required
+                      autoComplete="off"
+                      readOnly
+                      onFocus={(e) => e.target.removeAttribute('readonly')}
+                      placeholder="[ Enter Username ]"
+                      value={username}
+                      onChange={(e) => {
+                        setUsername(e.target.value);
+                        setErrorMessage(null);
+                      }}
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm font-medium focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-hidden"
+                    />
+                  </div>
+                </div>
+
+                {/* 3. PASSWORD */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                      Password
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="text-[11px] text-blue-600 hover:text-blue-700 font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      <span>{showPassword ? 'Hide' : 'Show'}</span>
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      name="password"
+                      id="password"
+                      required
+                      autoComplete="new-password"
+                      readOnly
+                      onFocus={(e) => e.target.removeAttribute('readonly')}
+                      placeholder="[ Enter Password ]"
+                      value={password}
+                      onChange={(e) => {
+                        setPassword(e.target.value);
+                        setErrorMessage(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleLogin(e as any);
+                        }
+                      }}
+                      className="w-full pl-10 pr-11 py-2.5 rounded-xl border border-slate-200 text-sm font-mono focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-hidden"
+                    />
+                  </div>
+                </div>
+
+                {/* 4. LOGIN BUTTON */}
+                <button
+                  type="button"
+                  onClick={handleLogin}
+                  disabled={loading}
+                  className="w-full mt-2 flex items-center justify-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-extrabold py-3 px-4 rounded-xl shadow-md transition-all cursor-pointer disabled:opacity-50 text-sm tracking-wide uppercase"
+                >
+                  <span>{loading ? 'Authenticating...' : 'Login'}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           )}
 
           {/* Security Guarantee Footer Note */}
           <div className="pt-4 border-t border-slate-100 text-center">
             <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500 font-medium">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Company-Specific Authorization & Access Control</span>
+              <span>Company-Isolated Session & Access Control</span>
             </div>
           </div>
         </div>

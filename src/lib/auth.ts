@@ -38,6 +38,36 @@ function setStored<T>(key: string, value: T): void {
   }
 }
 
+function getSessionStored<T>(key: string, defaultValue: T): T {
+  try {
+    if (typeof sessionStorage === 'undefined') return defaultValue;
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return defaultValue;
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error(`Error loading session key ${key}:`, err);
+    return defaultValue;
+  }
+}
+
+function setSessionStored<T>(key: string, value: T): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    console.error(`Error saving session key ${key}:`, err);
+  }
+}
+
+function removeSessionStored(key: string): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.removeItem(key);
+  } catch (err) {
+    console.error(`Error removing session key ${key}:`, err);
+  }
+}
+
 export const AuthService = {
   // --- ROLES MANAGEMENT ---
   getRoles(): Role[] {
@@ -513,7 +543,7 @@ export const AuthService = {
         ...session,
         effectivePermissions
       };
-      setStored(AUTH_STORAGE_KEYS.SESSION, updatedSession);
+      setSessionStored(AUTH_STORAGE_KEYS.SESSION, updatedSession);
     }
 
     return updatedUser;
@@ -595,7 +625,7 @@ export const AuthService = {
       effectivePermissions
     };
 
-    setStored(AUTH_STORAGE_KEYS.SESSION, updatedSession);
+    setSessionStored(AUTH_STORAGE_KEYS.SESSION, updatedSession);
     this.recordAuditLog(
       'COMPANY_SWITCHED',
       'companies',
@@ -741,7 +771,11 @@ export const AuthService = {
       loginTime: now
     };
 
-    setStored(AUTH_STORAGE_KEYS.SESSION, session);
+    setSessionStored(AUTH_STORAGE_KEYS.SESSION, session);
+    // Purge legacy global localStorage session key if present
+    if (typeof localStorage !== 'undefined') {
+      try { localStorage.removeItem(AUTH_STORAGE_KEYS.SESSION); } catch (_) {}
+    }
 
     this.recordAuditLog(
       'LOGIN',
@@ -767,7 +801,10 @@ export const AuthService = {
         session.user.username
       );
     }
-    localStorage.removeItem(AUTH_STORAGE_KEYS.SESSION);
+    removeSessionStored(AUTH_STORAGE_KEYS.SESSION);
+    if (typeof localStorage !== 'undefined') {
+      try { localStorage.removeItem(AUTH_STORAGE_KEYS.SESSION); } catch (_) {}
+    }
   },
 
   /**
@@ -775,7 +812,12 @@ export const AuthService = {
    * If the user was disabled or removed, the session is immediately invalidated.
    */
   getCurrentSession(): AuthSession | null {
-    const session = getStored<AuthSession | null>(AUTH_STORAGE_KEYS.SESSION, null);
+    // Purge legacy global localStorage session key if present
+    if (typeof localStorage !== 'undefined') {
+      try { localStorage.removeItem(AUTH_STORAGE_KEYS.SESSION); } catch (_) {}
+    }
+
+    const session = getSessionStored<AuthSession | null>(AUTH_STORAGE_KEYS.SESSION, null);
     if (!session || !session.user || !session.user.id) {
       return null;
     }
@@ -783,7 +825,7 @@ export const AuthService = {
     // Validate user still exists and isActive in database
     const user = this.getUserById(session.user.id);
     if (!user || !user.isActive) {
-      localStorage.removeItem(AUTH_STORAGE_KEYS.SESSION);
+      removeSessionStored(AUTH_STORAGE_KEYS.SESSION);
       return null;
     }
 
@@ -831,7 +873,7 @@ export const AuthService = {
     customUsername?: string
   ): void {
     try {
-      const session = getStored<AuthSession | null>(AUTH_STORAGE_KEYS.SESSION, null);
+      const session = getSessionStored<AuthSession | null>(AUTH_STORAGE_KEYS.SESSION, null);
       const userId = customUserId || session?.user.id || 'system';
       const username = customUsername || session?.user.username || 'system';
 

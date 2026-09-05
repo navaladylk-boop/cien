@@ -90,6 +90,84 @@ export function getSupabaseClient(url?: string, key?: string): SupabaseClient | 
   }
 }
 
+/**
+ * Executes a Supabase table mutation (upsert, update, insert) safely.
+ * If a column (e.g. 'updated_at', 'request_id', 'refunded_amount', 'reason', etc.) is missing in the user's database schema cache,
+ * automatically removes that field and retries the operation up to 25 times.
+ */
+export async function safeExecuteQuery<T = any>(
+  operation: (payload: any) => any,
+  initialPayload: any
+): Promise<{ data: T | null; error: any }> {
+  let currentPayload = Array.isArray(initialPayload)
+    ? initialPayload.map((item) => ({ ...item }))
+    : { ...initialPayload };
+
+  let attempts = 0;
+  const maxAttempts = 25;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    const res = (await operation(currentPayload)) || {};
+    if (!res.error) {
+      return res;
+    }
+
+    const errMsg = res.error.message || '';
+    const match = errMsg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i) ||
+                  errMsg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? (?:of relation|does not exist)/i) ||
+                  errMsg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? /i) ||
+                  errMsg.match(/['"]?([a-zA-Z0-9_]+)['"]? column/i);
+
+    let removedColumn = false;
+
+    if (match && match[1]) {
+      const missingCol = match[1];
+      if (Array.isArray(currentPayload)) {
+        for (const item of currentPayload) {
+          if (missingCol in item) {
+            delete item[missingCol];
+            removedColumn = true;
+          }
+        }
+      } else {
+        if (missingCol in currentPayload) {
+          delete currentPayload[missingCol];
+          removedColumn = true;
+        }
+      }
+    }
+
+    if (!removedColumn) {
+      const keysToTest = Array.isArray(currentPayload)
+        ? (currentPayload[0] ? Object.keys(currentPayload[0]) : [])
+        : Object.keys(currentPayload);
+
+      for (const key of keysToTest) {
+        if (errMsg.toLowerCase().includes(key.toLowerCase())) {
+          if (Array.isArray(currentPayload)) {
+            for (const item of currentPayload) {
+              delete item[key];
+            }
+          } else {
+            delete currentPayload[key];
+          }
+          removedColumn = true;
+          break;
+        }
+      }
+    }
+
+    if (removedColumn) {
+      continue;
+    }
+
+    return res;
+  }
+
+  return (await operation(currentPayload)) || {};
+}
+
 export interface ConnectionTestResult {
   success: boolean;
   message: string;
@@ -883,6 +961,112 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          // Direct Table Fallback
+          const invoiceNumber = sale.invoiceNumber || `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+          const invoiceId = sale.id || `inv-${Date.now()}`;
+          const compId = sale.companyId || 'comp-1';
+
+          const { error: insertErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_sales').upsert(payload),
+            {
+              id: invoiceId,
+              request_id: reqId,
+              invoice_number: invoiceNumber,
+              invoice_date: sale.date || new Date().toISOString().split('T')[0],
+              customer_id: sale.customerId || null,
+              customer_name: sale.customerName || '',
+              sale_type: sale.type || 'CASH',
+              total_amount: Number(sale.subtotal || 0),
+              overall_discount: Number(sale.discount || 0),
+              grand_total: Number(sale.grandTotal || 0),
+              paid_amount: Number(sale.paidAmount || 0),
+              due_amount: Number(sale.dueAmount || 0),
+              notes: sale.notes || '',
+              company_id: compId,
+              updated_at: new Date().toISOString()
+            }
+          );
+
+          if (insertErr) {
+            return { success: false, error: insertErr.message };
+          }
+
+          if (sale.items && sale.items.length > 0) {
+            const rows = sale.items.map((it, idx) => ({
+              id: `si-${Date.now()}-${idx}`,
+              invoice_id: invoiceId,
+              product_id: it.productId,
+              product_code: it.productCode || '',
+              product_name: it.productName || '',
+              quantity: Number(it.quantity || 0),
+              unit_price: Number(it.unitPrice || 0),
+              discount: Number(it.discount || 0),
+              discount_type: it.discountType || 'PERCENT',
+              total: Number(it.total || 0)
+            }));
+            await safeExecuteQuery(
+              (payload) => client.from('busy_ufo_sale_items').insert(payload),
+              rows
+            );
+
+            // Deduct product stock
+            for (const it of sale.items) {
+              if (it.productId) {
+                const { data: prodData } = await client
+                  .from('busy_ufo_products')
+                  .select('stock')
+                  .eq('id', it.productId)
+                  .eq('company_id', compId)
+                  .maybeSingle();
+
+                if (prodData) {
+                  const newStock = Math.max(0, Number(prodData.stock || 0) - Number(it.quantity || 0));
+                  await safeExecuteQuery(
+                    (payload) => client.from('busy_ufo_products').update(payload).eq('id', it.productId).eq('company_id', compId),
+                    { stock: newStock, updated_at: new Date().toISOString() }
+                  );
+                }
+              }
+            }
+          }
+
+          // Adjust customer balance if credit sale
+          if (sale.customerId && sale.type === 'CREDIT' && Number(sale.dueAmount || 0) > 0) {
+            const { data: custData } = await client
+              .from('busy_ufo_customers')
+              .select('current_balance')
+              .eq('id', sale.customerId)
+              .eq('company_id', compId)
+              .maybeSingle();
+
+            if (custData) {
+              const newBal = Number(custData.current_balance || 0) + Number(sale.dueAmount || 0);
+              await safeExecuteQuery(
+                (payload) => client.from('busy_ufo_customers').update(payload).eq('id', sale.customerId!).eq('company_id', compId),
+                { current_balance: newBal, updated_at: new Date().toISOString() }
+              );
+            }
+          }
+
+          return {
+            success: true,
+            isDuplicate: false,
+            existingData: {
+              ...sale,
+              id: invoiceId,
+              invoiceNumber: invoiceNumber,
+              requestId: reqId
+            }
+          };
+        }
+
         // Timeout recovery check
         const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
         if (isTimeout) {
@@ -979,6 +1163,59 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          const updatePayload: any = {
+            updated_at: new Date().toISOString()
+          };
+          if (sale.customerId !== undefined) updatePayload.customer_id = sale.customerId || null;
+          if (sale.customerName !== undefined) updatePayload.customer_name = sale.customerName || '';
+          if (sale.type !== undefined) updatePayload.sale_type = sale.type;
+          if (sale.date !== undefined) updatePayload.invoice_date = sale.date;
+          if (sale.subtotal !== undefined) updatePayload.total_amount = Number(sale.subtotal || 0);
+          if (sale.discount !== undefined) updatePayload.overall_discount = Number(sale.discount || 0);
+          if (sale.grandTotal !== undefined) updatePayload.grand_total = Number(sale.grandTotal || 0);
+          if (sale.paidAmount !== undefined) updatePayload.paid_amount = Number(sale.paidAmount || 0);
+          if (sale.dueAmount !== undefined) updatePayload.due_amount = Number(sale.dueAmount || 0);
+          if (sale.notes !== undefined) updatePayload.notes = sale.notes || '';
+
+          const { error: updateErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_sales').update(payload).eq('id', invoiceId),
+            updatePayload
+          );
+
+          if (updateErr) {
+            return { success: false, error: updateErr.message };
+          }
+
+          if (sale.items && sale.items.length > 0) {
+            await client.from('busy_ufo_sale_items').delete().eq('invoice_id', invoiceId);
+            const rows = sale.items.map((it, idx) => ({
+              id: `si-${invoiceId}-${Date.now()}-${idx}`,
+              invoice_id: invoiceId,
+              product_id: it.productId,
+              product_code: it.productCode || '',
+              product_name: it.productName || '',
+              quantity: Number(it.quantity || 0),
+              unit_price: Number(it.unitPrice || 0),
+              discount: Number(it.discount || 0),
+              discount_type: it.discountType || 'PERCENT',
+              total: Number(it.total || 0)
+            }));
+            await safeExecuteQuery(
+              (payload) => client.from('busy_ufo_sale_items').insert(payload),
+              rows
+            );
+          }
+
+          return { success: true };
+        }
+
         return { success: false, error: error.message };
       }
 
@@ -1018,6 +1255,21 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          await client.from('busy_ufo_sale_items').delete().eq('invoice_id', invoiceId);
+          const { error: delErr } = await client.from('busy_ufo_sales').delete().eq('id', invoiceId);
+          if (delErr) {
+            return { success: false, error: delErr.message };
+          }
+          return { success: true };
+        }
+
         // Safe timeout recovery without direct table fallback
         const recovery = await this.getTransactionByRequestId(reqId);
         if (recovery && recovery.found) {
@@ -1078,6 +1330,112 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          // Direct Table Fallback
+          const purchaseNumber = purchase.purchaseNumber || `PUR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+          const purchaseId = purchase.id || `pur-${Date.now()}`;
+          const compId = purchase.companyId || 'comp-1';
+
+          const { error: insertErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_purchases').upsert(payload),
+            {
+              id: purchaseId,
+              request_id: reqId,
+              purchase_number: purchaseNumber,
+              purchase_date: purchase.date || new Date().toISOString().split('T')[0],
+              supplier_id: purchase.supplierId || null,
+              supplier_name: purchase.supplierName || '',
+              purchase_type: purchase.type || 'CASH',
+              total_amount: Number(purchase.subtotal || 0),
+              overall_discount: Number(purchase.discount || 0),
+              grand_total: Number(purchase.grandTotal || 0),
+              paid_amount: Number(purchase.paidAmount || 0),
+              due_amount: Number(purchase.dueAmount || 0),
+              notes: purchase.notes || '',
+              company_id: compId,
+              updated_at: new Date().toISOString()
+            }
+          );
+
+          if (insertErr) {
+            return { success: false, error: insertErr.message };
+          }
+
+          if (purchase.items && purchase.items.length > 0) {
+            const rows = purchase.items.map((it, idx) => ({
+              id: `pi-${Date.now()}-${idx}`,
+              purchase_id: purchaseId,
+              product_id: it.productId,
+              product_code: it.productCode || '',
+              product_name: it.productName || '',
+              quantity: Number(it.quantity || 0),
+              unit_cost: Number(it.unitCost || 0),
+              discount: Number(it.discount || 0),
+              discount_type: it.discountType || 'PERCENT',
+              total: Number(it.total || 0)
+            }));
+            await safeExecuteQuery(
+              (payload) => client.from('busy_ufo_purchase_items').insert(payload),
+              rows
+            );
+
+            // Add product stock
+            for (const it of purchase.items) {
+              if (it.productId) {
+                const { data: prodData } = await client
+                  .from('busy_ufo_products')
+                  .select('stock')
+                  .eq('id', it.productId)
+                  .eq('company_id', compId)
+                  .maybeSingle();
+
+                if (prodData) {
+                  const newStock = Number(prodData.stock || 0) + Number(it.quantity || 0);
+                  await safeExecuteQuery(
+                    (payload) => client.from('busy_ufo_products').update(payload).eq('id', it.productId).eq('company_id', compId),
+                    { stock: newStock, updated_at: new Date().toISOString() }
+                  );
+                }
+              }
+            }
+          }
+
+          // Adjust supplier balance if credit purchase
+          if (purchase.supplierId && purchase.type === 'CREDIT' && Number(purchase.dueAmount || 0) > 0) {
+            const { data: suppData } = await client
+              .from('busy_ufo_suppliers')
+              .select('current_balance')
+              .eq('id', purchase.supplierId)
+              .eq('company_id', compId)
+              .maybeSingle();
+
+            if (suppData) {
+              const newBal = Number(suppData.current_balance || 0) + Number(purchase.dueAmount || 0);
+              await safeExecuteQuery(
+                (payload) => client.from('busy_ufo_suppliers').update(payload).eq('id', purchase.supplierId!).eq('company_id', compId),
+                { current_balance: newBal, updated_at: new Date().toISOString() }
+              );
+            }
+          }
+
+          return {
+            success: true,
+            isDuplicate: false,
+            existingData: {
+              ...purchase,
+              id: purchaseId,
+              purchaseNumber: purchaseNumber,
+              requestId: reqId
+            }
+          };
+        }
+
         const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
         if (isTimeout) {
           const recovery = await this.getTransactionByRequestId(reqId);
@@ -1173,6 +1531,59 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          const updatePayload: any = {
+            updated_at: new Date().toISOString()
+          };
+          if (purchase.supplierId !== undefined) updatePayload.supplier_id = purchase.supplierId || null;
+          if (purchase.supplierName !== undefined) updatePayload.supplier_name = purchase.supplierName || '';
+          if (purchase.type !== undefined) updatePayload.purchase_type = purchase.type;
+          if (purchase.date !== undefined) updatePayload.purchase_date = purchase.date;
+          if (purchase.subtotal !== undefined) updatePayload.total_amount = Number(purchase.subtotal || 0);
+          if (purchase.discount !== undefined) updatePayload.overall_discount = Number(purchase.discount || 0);
+          if (purchase.grandTotal !== undefined) updatePayload.grand_total = Number(purchase.grandTotal || 0);
+          if (purchase.paidAmount !== undefined) updatePayload.paid_amount = Number(purchase.paidAmount || 0);
+          if (purchase.dueAmount !== undefined) updatePayload.due_amount = Number(purchase.dueAmount || 0);
+          if (purchase.notes !== undefined) updatePayload.notes = purchase.notes || '';
+
+          const { error: updateErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_purchases').update(payload).eq('id', purchaseId),
+            updatePayload
+          );
+
+          if (updateErr) {
+            return { success: false, error: updateErr.message };
+          }
+
+          if (purchase.items && purchase.items.length > 0) {
+            await client.from('busy_ufo_purchase_items').delete().eq('purchase_id', purchaseId);
+            const rows = purchase.items.map((it, idx) => ({
+              id: `pi-${purchaseId}-${Date.now()}-${idx}`,
+              purchase_id: purchaseId,
+              product_id: it.productId,
+              product_code: it.productCode || '',
+              product_name: it.productName || '',
+              quantity: Number(it.quantity || 0),
+              unit_cost: Number(it.unitCost || 0),
+              discount: Number(it.discount || 0),
+              discount_type: it.discountType || 'PERCENT',
+              total: Number(it.total || 0)
+            }));
+            await safeExecuteQuery(
+              (payload) => client.from('busy_ufo_purchase_items').insert(payload),
+              rows
+            );
+          }
+
+          return { success: true };
+        }
+
         return { success: false, error: error.message };
       }
 
@@ -1212,6 +1623,21 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          await client.from('busy_ufo_purchase_items').delete().eq('purchase_id', purchaseId);
+          const { error: delErr } = await client.from('busy_ufo_purchases').delete().eq('id', purchaseId);
+          if (delErr) {
+            return { success: false, error: delErr.message };
+          }
+          return { success: true };
+        }
+
         // Safe timeout recovery without direct table fallback
         const recovery = await this.getTransactionByRequestId(reqId);
         if (recovery && recovery.found) {
@@ -1274,6 +1700,117 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          // Direct Table Fallback
+          const returnNumber = saleReturn.returnNumber || `SR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+          const returnId = saleReturn.id || `sr-${Date.now()}`;
+          const compId = saleReturn.companyId || 'comp-1';
+
+          const { error: insertErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_sale_returns').upsert(payload),
+            {
+              id: returnId,
+              request_id: reqId,
+              return_number: returnNumber,
+              date: saleReturn.date || new Date().toISOString().split('T')[0],
+              customer_id: saleReturn.customerId || null,
+              customer_name: saleReturn.customerName || '',
+              type: saleReturn.type || 'CASH',
+              invoice_id: saleReturn.invoiceId || null,
+              invoice_number: saleReturn.invoiceNumber || null,
+              subtotal: Number(saleReturn.subtotal || 0),
+              discount: Number(saleReturn.discount || 0),
+              grand_total: Number(saleReturn.grandTotal || 0),
+              refunded_amount: Number(saleReturn.refundedAmount || 0),
+              reason: saleReturn.reason || '',
+              notes: saleReturn.notes || '',
+              company_id: compId,
+              updated_at: new Date().toISOString()
+            }
+          );
+
+          if (insertErr) {
+            return { success: false, error: insertErr.message };
+          }
+
+          // Insert items
+          if (saleReturn.items && saleReturn.items.length > 0) {
+            const rows = saleReturn.items.map((it, idx) => ({
+              id: (it as any).id || `sri-${Date.now()}-${idx}`,
+              return_id: returnId,
+              product_id: it.productId,
+              product_code: it.productCode || '',
+              product_name: it.productName || '',
+              quantity: Number(it.quantity || 0),
+              unit_price: Number(it.unitPrice || 0),
+              total: Number(it.total || 0)
+            }));
+            await safeExecuteQuery(
+              (payload) => client.from('busy_ufo_sale_return_items').insert(payload),
+              rows
+            );
+
+            // Restock products
+            for (const it of saleReturn.items) {
+              if (it.productId) {
+                const { data: prodData } = await client
+                  .from('busy_ufo_products')
+                  .select('stock')
+                  .eq('id', it.productId)
+                  .eq('company_id', compId)
+                  .maybeSingle();
+
+                if (prodData) {
+                  const newStock = Number(prodData.stock || 0) + Number(it.quantity || 0);
+                  await safeExecuteQuery(
+                    (payload) => client.from('busy_ufo_products').update(payload).eq('id', it.productId).eq('company_id', compId),
+                    { stock: newStock, updated_at: new Date().toISOString() }
+                  );
+                }
+              }
+            }
+          }
+
+          // Adjust customer balance if credit sale return
+          if (saleReturn.customerId && saleReturn.type === 'CREDIT') {
+            const { data: custData } = await client
+              .from('busy_ufo_customers')
+              .select('current_balance')
+              .eq('id', saleReturn.customerId)
+              .eq('company_id', compId)
+              .maybeSingle();
+
+            if (custData) {
+              const newBal = Math.max(0, Number(custData.current_balance || 0) - Number(saleReturn.grandTotal || 0));
+              await safeExecuteQuery(
+                (payload) => client.from('busy_ufo_customers').update(payload).eq('id', saleReturn.customerId!).eq('company_id', compId),
+                { current_balance: newBal, updated_at: new Date().toISOString() }
+              );
+            }
+          }
+
+          return {
+            success: true,
+            existingData: {
+              ...saleReturn,
+              id: returnId,
+              returnNumber: returnNumber,
+              requestId: reqId
+            },
+            data: {
+              id: returnId,
+              return_number: returnNumber,
+              request_id: reqId
+            }
+          };
+        }
+
         const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
         if (isTimeout) {
           const recovery = await this.getTransactionByRequestId(reqId);
@@ -1333,18 +1870,108 @@ export const SupabaseSyncService = {
 
     try {
       const compId = companyId || 'comp-1';
-      const { data, error } = await client.rpc('void_sale_return_rpc', {
-        p_return_id: returnId,
-        p_company_id: compId,
-        p_request_id: reqId
-      });
 
-      if (error) {
-        return { success: false, error: error.message };
+      // 1. Fetch current return and items before deletion to allow stock & balance reversal
+      const { data: srData } = await client
+        .from('busy_ufo_sale_returns')
+        .select('*')
+        .eq('id', returnId)
+        .maybeSingle();
+
+      let srItems: any[] = [];
+      try {
+        const { data: itemsData } = await client
+          .from('busy_ufo_sale_return_items')
+          .select('*')
+          .eq('return_id', returnId);
+        if (itemsData) srItems = itemsData;
+      } catch (e) {
+        // Table might not exist
       }
 
-      if (data && typeof data === 'object' && data.success === false) {
-        return { success: false, error: data.error || 'Database rejected sales return voiding.' };
+      // Try RPC first
+      let rpcSucceeded = false;
+      try {
+        const { data, error } = await client.rpc('void_sale_return_rpc', {
+          p_return_id: returnId,
+          p_company_id: compId,
+          p_request_id: reqId
+        });
+        if (!error && data && (data === true || (typeof data === 'object' && data.success !== false))) {
+          rpcSucceeded = true;
+        }
+      } catch (e) {
+        rpcSucceeded = false;
+      }
+
+      if (!rpcSucceeded) {
+        // Fallback: direct table updates & deletion
+        let itemsToRevert: Array<{ product_id: string; quantity: number }> = [];
+        if (srItems && srItems.length > 0) {
+          itemsToRevert = srItems.map((i: any) => ({
+            product_id: i.product_id,
+            quantity: Number(i.quantity || 0)
+          }));
+        } else if (srData && srData.items) {
+          const parsed = typeof srData.items === 'string' ? JSON.parse(srData.items) : srData.items;
+          if (Array.isArray(parsed)) {
+            itemsToRevert = parsed.map((i: any) => ({
+              product_id: i.productId || i.product_id,
+              quantity: Number(i.quantity || 0)
+            }));
+          }
+        }
+
+        // Revert product stock (Stock IN -> Stock OUT)
+        for (const item of itemsToRevert) {
+          if (item.product_id) {
+            const { data: prodData } = await client
+              .from('busy_ufo_products')
+              .select('stock, current_stock')
+              .eq('id', item.product_id)
+              .maybeSingle();
+
+            if (prodData) {
+              const currentStk = Number(prodData.stock ?? prodData.current_stock ?? 0);
+              const newStk = Math.max(0, currentStk - item.quantity);
+              await client
+                .from('busy_ufo_products')
+                .update({ stock: newStk, current_stock: newStk, updated_at: new Date().toISOString() })
+                .eq('id', item.product_id);
+            }
+          }
+        }
+
+        // Revert customer balance if CREDIT type
+        if (srData && srData.customer_id && (srData.type === 'CREDIT' || srData.return_type === 'CREDIT')) {
+          const { data: custData } = await client
+            .from('busy_ufo_customers')
+            .select('current_balance, outstanding_balance')
+            .eq('id', srData.customer_id)
+            .maybeSingle();
+
+          if (custData) {
+            const currentBal = Number(custData.current_balance ?? custData.outstanding_balance ?? 0);
+            const returnTotal = Number(srData.grand_total ?? srData.grandTotal ?? 0);
+            const newBal = currentBal + returnTotal;
+            await client
+              .from('busy_ufo_customers')
+              .update({ current_balance: newBal, outstanding_balance: newBal, updated_at: new Date().toISOString() })
+              .eq('id', srData.customer_id);
+          }
+        }
+
+        // Delete items and main return record safely
+        try {
+          await client.from('busy_ufo_sale_return_items').delete().eq('return_id', returnId);
+        } catch (e) {
+          // ignore
+        }
+
+        const { error: delErr } = await client.from('busy_ufo_sale_returns').delete().eq('id', returnId);
+        if (delErr) {
+          console.warn('Could not delete sale return from Supabase table:', delErr.message);
+        }
       }
 
       return { success: true };
@@ -1352,6 +1979,152 @@ export const SupabaseSyncService = {
       return { success: false, error: e?.message };
     } finally {
       _inFlightRequests.delete(reqId);
+    }
+  },
+
+  async updateSaleReturn(id: string, saleReturn: SaleReturn, compId?: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+    const targetCompId = compId || saleReturn.companyId || 'comp-1';
+
+    try {
+      // 1. Fetch old return items & customer ID to adjust balances/stock
+      const { data: oldItems } = await client
+        .from('busy_ufo_sale_return_items')
+        .select('*')
+        .eq('return_id', id);
+
+      const { data: oldData } = await client
+        .from('busy_ufo_sale_returns')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+
+      // 2. Update main sale return record
+      const { error: updateErr } = await safeExecuteQuery(
+        (payload) => client.from('busy_ufo_sale_returns').update(payload).eq('id', id),
+        {
+          customer_id: saleReturn.customerId || null,
+          customer_name: saleReturn.customerName || 'Customer',
+          date: saleReturn.date || new Date().toISOString().split('T')[0],
+          reason: saleReturn.reason || '',
+          type: saleReturn.type || 'CASH',
+          subtotal: Number(saleReturn.subtotal || 0),
+          discount: Number(saleReturn.discount || 0),
+          tax_amount: Number(saleReturn.taxAmount || 0),
+          grand_total: Number(saleReturn.grandTotal || 0),
+          notes: saleReturn.notes || '',
+          updated_at: new Date().toISOString()
+        }
+      );
+
+      if (updateErr) return { success: false, error: updateErr.message };
+
+      // 3. Re-insert line items
+      try {
+        await client.from('busy_ufo_sale_return_items').delete().eq('return_id', id);
+      } catch (e) {
+        // ignore
+      }
+
+      if (saleReturn.items && saleReturn.items.length > 0) {
+        const itemRows = saleReturn.items.map((item, idx) => ({
+          id: `sri-${id}-${idx}`,
+          return_id: id,
+          product_id: item.productId,
+          product_code: item.productCode || '',
+          product_name: item.productName || 'Item',
+          quantity: Number(item.quantity || 1),
+          unit_price: Number(item.unitPrice || 0),
+          total: Number(item.total || 0)
+        }));
+        await safeExecuteQuery(
+          (payload) => client.from('busy_ufo_sale_return_items').insert(payload),
+          itemRows
+        );
+      }
+
+      // 4. Stock adjustment in Supabase DB: Reverse old items stock IN, apply new items stock IN
+      if (oldItems && oldItems.length > 0) {
+        for (const oItem of oldItems) {
+          if (oItem.product_id) {
+            const { data: prodData } = await client
+              .from('busy_ufo_products')
+              .select('stock, current_stock')
+              .eq('id', oItem.product_id)
+              .maybeSingle();
+            if (prodData) {
+              const currentStk = Number(prodData.stock ?? prodData.current_stock ?? 0);
+              const newStk = Math.max(0, currentStk - Number(oItem.quantity || 0));
+              await safeExecuteQuery(
+                (payload) => client.from('busy_ufo_products').update(payload).eq('id', oItem.product_id),
+                { stock: newStk, current_stock: newStk }
+              );
+            }
+          }
+        }
+      }
+
+      if (saleReturn.items && saleReturn.items.length > 0) {
+        for (const nItem of saleReturn.items) {
+          if (nItem.productId) {
+            const { data: prodData } = await client
+              .from('busy_ufo_products')
+              .select('stock, current_stock')
+              .eq('id', nItem.productId)
+              .maybeSingle();
+            if (prodData) {
+              const currentStk = Number(prodData.stock ?? prodData.current_stock ?? 0);
+              const newStk = currentStk + Number(nItem.quantity || 0);
+              await safeExecuteQuery(
+                (payload) => client.from('busy_ufo_products').update(payload).eq('id', nItem.productId),
+                { stock: newStk, current_stock: newStk }
+              );
+            }
+          }
+        }
+      }
+
+      // 5. Customer balance adjustment in Supabase DB
+      if (oldData && oldData.customer_id && (oldData.type === 'CREDIT' || oldData.return_type === 'CREDIT')) {
+        const { data: custData } = await client
+          .from('busy_ufo_customers')
+          .select('current_balance, outstanding_balance')
+          .eq('id', oldData.customer_id)
+          .maybeSingle();
+
+        if (custData) {
+          const currentBal = Number(custData.current_balance ?? custData.outstanding_balance ?? 0);
+          const oldReturnTotal = Number(oldData.grand_total ?? oldData.grandTotal ?? 0);
+          const revertedBal = currentBal + oldReturnTotal;
+          await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_customers').update(payload).eq('id', oldData.customer_id),
+            { current_balance: revertedBal, outstanding_balance: revertedBal }
+          );
+        }
+      }
+
+      if (saleReturn.customerId && saleReturn.type === 'CREDIT') {
+        const { data: custData } = await client
+          .from('busy_ufo_customers')
+          .select('current_balance, outstanding_balance')
+          .eq('id', saleReturn.customerId)
+          .maybeSingle();
+
+        if (custData) {
+          const currentBal = Number(custData.current_balance ?? custData.outstanding_balance ?? 0);
+          const newReturnTotal = Number(saleReturn.grandTotal || 0);
+          const finalBal = Math.max(0, currentBal - newReturnTotal);
+          await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_customers').update(payload).eq('id', saleReturn.customerId),
+            { current_balance: finalBal, outstanding_balance: finalBal }
+          );
+        }
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
     }
   },
 
@@ -1395,6 +2168,116 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          // Direct Table Fallback
+          const returnNumber = purchaseReturn.returnNumber || `PR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+          const returnId = purchaseReturn.id || `pr-${Date.now()}`;
+          const compId = purchaseReturn.companyId || 'comp-1';
+
+          const { error: insertErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_purchase_returns').upsert(payload),
+            {
+              id: returnId,
+              request_id: reqId,
+              return_number: returnNumber,
+              date: purchaseReturn.date || new Date().toISOString().split('T')[0],
+              supplier_id: purchaseReturn.supplierId || null,
+              supplier_name: purchaseReturn.supplierName || '',
+              type: purchaseReturn.type || 'CASH',
+              purchase_id: purchaseReturn.purchaseId || null,
+              purchase_number: purchaseReturn.purchaseNumber || null,
+              subtotal: Number(purchaseReturn.subtotal || 0),
+              discount: Number(purchaseReturn.discount || 0),
+              grand_total: Number(purchaseReturn.grandTotal || 0),
+              reason: purchaseReturn.reason || '',
+              notes: purchaseReturn.notes || '',
+              company_id: compId,
+              updated_at: new Date().toISOString()
+            }
+          );
+
+          if (insertErr) {
+            return { success: false, error: insertErr.message };
+          }
+
+          // Insert items
+          if (purchaseReturn.items && purchaseReturn.items.length > 0) {
+            const rows = purchaseReturn.items.map((it, idx) => ({
+              id: (it as any).id || `pri-${Date.now()}-${idx}`,
+              return_id: returnId,
+              product_id: it.productId,
+              product_code: it.productCode || '',
+              product_name: it.productName || '',
+              quantity: Number(it.quantity || 0),
+              unit_cost: Number(it.unitCost || 0),
+              total: Number(it.total || 0)
+            }));
+            await safeExecuteQuery(
+              (payload) => client.from('busy_ufo_purchase_return_items').insert(payload),
+              rows
+            );
+
+            // Deduct product stocks
+            for (const it of purchaseReturn.items) {
+              if (it.productId) {
+                const { data: prodData } = await client
+                  .from('busy_ufo_products')
+                  .select('stock')
+                  .eq('id', it.productId)
+                  .eq('company_id', compId)
+                  .maybeSingle();
+
+                if (prodData) {
+                  const newStock = Math.max(0, Number(prodData.stock || 0) - Number(it.quantity || 0));
+                  await safeExecuteQuery(
+                    (payload) => client.from('busy_ufo_products').update(payload).eq('id', it.productId).eq('company_id', compId),
+                    { stock: newStock, updated_at: new Date().toISOString() }
+                  );
+                }
+              }
+            }
+          }
+
+          // Adjust supplier balance if credit purchase return
+          if (purchaseReturn.supplierId && purchaseReturn.type === 'CREDIT') {
+            const { data: suppData } = await client
+              .from('busy_ufo_suppliers')
+              .select('current_balance')
+              .eq('id', purchaseReturn.supplierId)
+              .eq('company_id', compId)
+              .maybeSingle();
+
+            if (suppData) {
+              const newBal = Math.max(0, Number(suppData.current_balance || 0) - Number(purchaseReturn.grandTotal || 0));
+              await safeExecuteQuery(
+                (payload) => client.from('busy_ufo_suppliers').update(payload).eq('id', purchaseReturn.supplierId!).eq('company_id', compId),
+                { current_balance: newBal, updated_at: new Date().toISOString() }
+              );
+            }
+          }
+
+          return {
+            success: true,
+            existingData: {
+              ...purchaseReturn,
+              id: returnId,
+              returnNumber: returnNumber,
+              requestId: reqId
+            },
+            data: {
+              id: returnId,
+              return_number: returnNumber,
+              request_id: reqId
+            }
+          };
+        }
+
         const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
         if (isTimeout) {
           const recovery = await this.getTransactionByRequestId(reqId);
@@ -1461,6 +2344,21 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          await client.from('busy_ufo_purchase_return_items').delete().eq('return_id', returnId);
+          const { error: delErr } = await client.from('busy_ufo_purchase_returns').delete().eq('id', returnId);
+          if (delErr) {
+            return { success: false, error: delErr.message };
+          }
+          return { success: true };
+        }
+
         return { success: false, error: error.message };
       }
 
@@ -1473,6 +2371,57 @@ export const SupabaseSyncService = {
       return { success: false, error: e?.message };
     } finally {
       _inFlightRequests.delete(reqId);
+    }
+  },
+
+  async updatePurchaseReturn(id: string, purchaseReturn: PurchaseReturn, compId?: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+    const targetCompId = compId || purchaseReturn.companyId || 'comp-1';
+
+    try {
+      const { error: updateErr } = await safeExecuteQuery(
+        (payload) => client.from('busy_ufo_purchase_returns').update(payload).eq('id', id),
+        {
+          supplier_id: purchaseReturn.supplierId || null,
+          supplier_name: purchaseReturn.supplierName || 'Supplier',
+          date: purchaseReturn.date || new Date().toISOString().split('T')[0],
+          reason: purchaseReturn.reason || '',
+          type: purchaseReturn.type || 'CASH',
+          subtotal: Number(purchaseReturn.subtotal || 0),
+          discount: Number(purchaseReturn.discount || 0),
+          tax_amount: Number(purchaseReturn.taxAmount || 0),
+          grand_total: Number(purchaseReturn.grandTotal || 0),
+          notes: purchaseReturn.notes || '',
+          updated_at: new Date().toISOString()
+        }
+      );
+
+      if (updateErr) return { success: false, error: updateErr.message };
+
+      // Re-insert line items
+      await client.from('busy_ufo_purchase_return_items').delete().eq('return_id', id);
+
+      if (purchaseReturn.items && purchaseReturn.items.length > 0) {
+        const itemRows = purchaseReturn.items.map((item, idx) => ({
+          id: `pri-${id}-${idx}`,
+          return_id: id,
+          product_id: item.productId,
+          product_code: item.productCode || '',
+          product_name: item.productName || 'Item',
+          quantity: Number(item.quantity || 1),
+          unit_price: Number(item.unitCost || (item as any).unitPrice || 0),
+          total: Number(item.total || 0)
+        }));
+        await safeExecuteQuery(
+          (payload) => client.from('busy_ufo_purchase_return_items').insert(payload),
+          itemRows
+        );
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
     }
   },
 
@@ -1503,6 +2452,69 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          // Direct Table Fallback
+          const receiptNumber = receipt.receiptNumber || `REC-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+          const receiptId = receipt.id || `rec-${Date.now()}`;
+          const compId = receipt.companyId || 'comp-1';
+
+          const { error: insertErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_customer_receipts').upsert(payload),
+            {
+              id: receiptId,
+              request_id: reqId,
+              receipt_number: receiptNumber,
+              date: receipt.date || new Date().toISOString().split('T')[0],
+              customer_id: receipt.customerId || null,
+              customer_name: receipt.customerName || 'Customer',
+              amount: Number(receipt.amount || 0),
+              payment_method: receipt.paymentMode || 'CASH',
+              reference_no: receipt.referenceNo || '',
+              notes: receipt.notes || '',
+              company_id: compId,
+              updated_at: new Date().toISOString()
+            }
+          );
+
+          if (insertErr) {
+            return { success: false, error: insertErr.message };
+          }
+
+          if (receipt.customerId) {
+            const { data: custData } = await client
+              .from('busy_ufo_customers')
+              .select('current_balance')
+              .eq('id', receipt.customerId)
+              .eq('company_id', compId)
+              .maybeSingle();
+
+            if (custData) {
+              const newBal = Math.max(0, Number(custData.current_balance || 0) - Number(receipt.amount || 0));
+              await client
+                .from('busy_ufo_customers')
+                .update({ current_balance: newBal, updated_at: new Date().toISOString() })
+                .eq('id', receipt.customerId)
+                .eq('company_id', compId);
+            }
+          }
+
+          return {
+            success: true,
+            existingData: {
+              ...receipt,
+              id: receiptId,
+              receiptNumber: receiptNumber,
+              requestId: reqId
+            }
+          };
+        }
+
         const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
         if (isTimeout) {
           const recovery = await this.getTransactionByRequestId(reqId);
@@ -1567,6 +2579,47 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          const { data: recData } = await client
+            .from('busy_ufo_customer_receipts')
+            .select('*')
+            .eq('id', id)
+            .maybeSingle();
+
+          const { error: delErr } = await client
+            .from('busy_ufo_customer_receipts')
+            .delete()
+            .eq('id', id);
+
+          if (delErr) {
+            return { success: false, error: delErr.message };
+          }
+
+          if (recData && recData.customer_id) {
+            const { data: custData } = await client
+              .from('busy_ufo_customers')
+              .select('current_balance')
+              .eq('id', recData.customer_id)
+              .maybeSingle();
+
+            if (custData) {
+              const newBal = Number(custData.current_balance || 0) + Number(recData.amount || 0);
+              await client
+                .from('busy_ufo_customers')
+                .update({ current_balance: newBal, updated_at: new Date().toISOString() })
+                .eq('id', recData.customer_id);
+            }
+          }
+
+          return { success: true };
+        }
+
         return { success: false, error: error.message };
       }
 
@@ -1579,6 +2632,33 @@ export const SupabaseSyncService = {
       return { success: false, error: e?.message };
     } finally {
       _inFlightRequests.delete(reqId);
+    }
+  },
+
+  async updateReceipt(id: string, receipt: CustomerReceipt, compId?: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+
+    try {
+      const targetCompId = compId || receipt.companyId || 'comp-1';
+      const { error: updateErr } = await safeExecuteQuery(
+        (payload) => client.from('busy_ufo_customer_receipts').update(payload).eq('id', id),
+        {
+          customer_id: receipt.customerId || null,
+          customer_name: receipt.customerName || 'Customer',
+          date: receipt.date || new Date().toISOString().split('T')[0],
+          amount: Number(receipt.amount || 0),
+          payment_method: receipt.paymentMode || 'CASH',
+          reference_no: receipt.referenceNo || '',
+          notes: receipt.notes || '',
+          updated_at: new Date().toISOString()
+        }
+      );
+
+      if (updateErr) return { success: false, error: updateErr.message };
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
     }
   },
 
@@ -1608,6 +2688,69 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          // Direct Table Fallback
+          const paymentNumber = payment.paymentNumber || `PAY-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+          const paymentId = payment.id || `pay-${Date.now()}`;
+          const compId = payment.companyId || 'comp-1';
+
+          const { error: insertErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_supplier_payments').upsert(payload),
+            {
+              id: paymentId,
+              request_id: reqId,
+              payment_number: paymentNumber,
+              date: payment.date || new Date().toISOString().split('T')[0],
+              supplier_id: payment.supplierId || null,
+              supplier_name: payment.supplierName || 'Supplier',
+              amount: Number(payment.amount || 0),
+              payment_method: payment.paymentMode || 'CASH',
+              reference_no: payment.referenceNo || '',
+              notes: payment.notes || '',
+              company_id: compId,
+              updated_at: new Date().toISOString()
+            }
+          );
+
+          if (insertErr) {
+            return { success: false, error: insertErr.message };
+          }
+
+          if (payment.supplierId) {
+            const { data: suppData } = await client
+              .from('busy_ufo_suppliers')
+              .select('current_balance')
+              .eq('id', payment.supplierId)
+              .eq('company_id', compId)
+              .maybeSingle();
+
+            if (suppData) {
+              const newBal = Math.max(0, Number(suppData.current_balance || 0) - Number(payment.amount || 0));
+              await client
+                .from('busy_ufo_suppliers')
+                .update({ current_balance: newBal, updated_at: new Date().toISOString() })
+                .eq('id', payment.supplierId)
+                .eq('company_id', compId);
+            }
+          }
+
+          return {
+            success: true,
+            existingData: {
+              ...payment,
+              id: paymentId,
+              paymentNumber: paymentNumber,
+              requestId: reqId
+            }
+          };
+        }
+
         const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
         if (isTimeout) {
           const recovery = await this.getTransactionByRequestId(reqId);
@@ -1672,6 +2815,47 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          const { data: payData } = await client
+            .from('busy_ufo_supplier_payments')
+            .select('*')
+            .eq('id', id)
+            .maybeSingle();
+
+          const { error: delErr } = await client
+            .from('busy_ufo_supplier_payments')
+            .delete()
+            .eq('id', id);
+
+          if (delErr) {
+            return { success: false, error: delErr.message };
+          }
+
+          if (payData && payData.supplier_id) {
+            const { data: suppData } = await client
+              .from('busy_ufo_suppliers')
+              .select('current_balance')
+              .eq('id', payData.supplier_id)
+              .maybeSingle();
+
+            if (suppData) {
+              const newBal = Number(suppData.current_balance || 0) + Number(payData.amount || 0);
+              await client
+                .from('busy_ufo_suppliers')
+                .update({ current_balance: newBal, updated_at: new Date().toISOString() })
+                .eq('id', payData.supplier_id);
+            }
+          }
+
+          return { success: true };
+        }
+
         return { success: false, error: error.message };
       }
 
@@ -1684,6 +2868,33 @@ export const SupabaseSyncService = {
       return { success: false, error: e?.message };
     } finally {
       _inFlightRequests.delete(reqId);
+    }
+  },
+
+  async updatePayment(id: string, payment: SupplierPayment, compId?: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+
+    try {
+      const targetCompId = compId || payment.companyId || 'comp-1';
+      const { error: updateErr } = await safeExecuteQuery(
+        (payload) => client.from('busy_ufo_supplier_payments').update(payload).eq('id', id),
+        {
+          supplier_id: payment.supplierId || null,
+          supplier_name: payment.supplierName || 'Supplier',
+          date: payment.date || new Date().toISOString().split('T')[0],
+          amount: Number(payment.amount || 0),
+          payment_method: payment.paymentMode || 'CASH',
+          reference_no: payment.referenceNo || '',
+          notes: payment.notes || '',
+          updated_at: new Date().toISOString()
+        }
+      );
+
+      if (updateErr) return { success: false, error: updateErr.message };
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
     }
   },
 
@@ -1712,6 +2923,44 @@ export const SupabaseSyncService = {
       });
 
       if (rpcError) {
+        const isRpcMissing = (rpcError.message || '').toLowerCase().includes('could not find the function') ||
+                             (rpcError.message || '').toLowerCase().includes('schema cache') ||
+                             (rpcError.message || '').toLowerCase().includes('does not exist') ||
+                             rpcError.code === 'PGRST202' ||
+                             rpcError.code === '42883';
+
+        if (isRpcMissing) {
+          const expenseNumber = expense.expenseNumber || `EXP-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+          const expenseId = expense.id || `exp-${Date.now()}`;
+          const compId = expense.companyId || 'comp-1';
+
+          const { error: insertErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_expenses').upsert(payload),
+            {
+              id: expenseId,
+              request_id: reqId,
+              expense_number: expenseNumber,
+              date: expense.date || new Date().toISOString().split('T')[0],
+              category: expense.category || 'General',
+              amount: Number(expense.amount || 0),
+              paid_to: expense.paidTo || '',
+              payment_method: expense.paymentMode || 'CASH',
+              notes: expense.notes || '',
+              company_id: compId,
+              updated_at: new Date().toISOString()
+            }
+          );
+
+          if (insertErr) {
+            return { success: false, error: insertErr.message };
+          }
+
+          return {
+            success: true,
+            expenseNumber: expenseNumber
+          };
+        }
+
         const isTimeout = rpcError.message?.toLowerCase().includes('timeout') || rpcError.message?.toLowerCase().includes('failed to fetch');
         if (isTimeout) {
           const recovery = await this.getTransactionByRequestId(reqId);
@@ -1754,6 +3003,31 @@ export const SupabaseSyncService = {
       if (error) {
         return { success: false, error: error.message };
       }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
+    }
+  },
+
+  async updateExpense(id: string, expense: Expense, compId?: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+
+    try {
+      const { error: updateErr } = await safeExecuteQuery(
+        (payload) => client.from('busy_ufo_expenses').update(payload).eq('id', id),
+        {
+          category: expense.category || 'General',
+          amount: Number(expense.amount || 0),
+          date: expense.date || new Date().toISOString().split('T')[0],
+          payment_method: expense.paymentMode || 'CASH',
+          paid_to: expense.paidTo || '',
+          notes: expense.notes || '',
+          updated_at: new Date().toISOString()
+        }
+      );
+
+      if (updateErr) return { success: false, error: updateErr.message };
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message };
@@ -2177,6 +3451,52 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          const pdcId = pdc.id || `pdc-${Date.now()}`;
+          const compId = pdc.companyId || 'comp-1';
+
+          const { error: insertErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_pdcs').upsert(payload),
+            {
+              id: pdcId,
+              request_id: reqId,
+              type: pdc.type,
+              party_id: pdc.partyId || null,
+              party_type: pdc.partyType,
+              party_name: pdc.partyName,
+              cheque_number: pdc.chequeNumber,
+              bank_name: pdc.bankName,
+              cheque_date: pdc.chequeDate,
+              amount: Number(pdc.amount || 0),
+              status: pdc.status || 'PENDING',
+              reference_voucher_no: pdc.referenceVoucherNo || '',
+              notes: pdc.notes || '',
+              company_id: compId,
+              updated_at: new Date().toISOString()
+            }
+          );
+
+          if (insertErr) {
+            return { success: false, error: insertErr.message };
+          }
+
+          return {
+            success: true,
+            isDuplicate: false,
+            data: {
+              ...pdc,
+              id: pdcId,
+              requestId: reqId
+            }
+          };
+        }
+
         // Safe timeout recovery without direct table fallback
         const isTimeout = error.message?.toLowerCase().includes('timeout') || error.message?.toLowerCase().includes('failed to fetch');
         if (isTimeout) {
@@ -2249,6 +3569,33 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          const updatePayload: any = { updated_at: new Date().toISOString() };
+          if (pdc.type) updatePayload.type = pdc.type;
+          if (pdc.partyId !== undefined) updatePayload.party_id = pdc.partyId;
+          if (pdc.partyType) updatePayload.party_type = pdc.partyType;
+          if (pdc.partyName) updatePayload.party_name = pdc.partyName;
+          if (pdc.chequeNumber) updatePayload.cheque_number = pdc.chequeNumber;
+          if (pdc.bankName) updatePayload.bank_name = pdc.bankName;
+          if (pdc.chequeDate) updatePayload.cheque_date = pdc.chequeDate;
+          if (pdc.amount !== undefined) updatePayload.amount = Number(pdc.amount);
+          if (pdc.notes !== undefined) updatePayload.notes = pdc.notes;
+
+          const { error: updErr } = await client
+            .from('busy_ufo_pdcs')
+            .update(updatePayload)
+            .eq('id', pdc.id);
+
+          if (updErr) return { success: false, error: updErr.message };
+          return { success: true, data: pdc };
+        }
+
         return { success: false, error: error.message };
       }
 
@@ -2496,6 +3843,18 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          const { error: delErr } = await client.from('busy_ufo_pdcs').delete().eq('id', id);
+          if (delErr) return { success: false, error: delErr.message };
+          return { success: true };
+        }
+
         return { success: false, error: error.message };
       }
 
@@ -2586,6 +3945,57 @@ export const SupabaseSyncService = {
       });
 
       if (error) {
+        const isRpcMissing = (error.message || '').toLowerCase().includes('could not find the function') ||
+                             (error.message || '').toLowerCase().includes('schema cache') ||
+                             (error.message || '').toLowerCase().includes('does not exist') ||
+                             error.code === 'PGRST202' ||
+                             error.code === '42883';
+
+        if (isRpcMissing) {
+          const entryId = entry.id || `jrn-${Date.now()}`;
+          const debitTotal = (entry.lines || []).reduce((acc, l) => acc + Number(l.debit || 0), 0);
+          const creditTotal = (entry.lines || []).reduce((acc, l) => acc + Number(l.credit || 0), 0);
+
+          const { error: insertErr } = await safeExecuteQuery(
+            (payload) => client.from('busy_ufo_journal_entries').upsert(payload),
+            {
+              id: entryId,
+              request_id: reqId,
+              voucher_no: entry.voucherNo,
+              voucher_type: entry.voucherType || 'JOURNAL',
+              voucher_date: entry.voucherDate || new Date().toISOString().split('T')[0],
+              narration: entry.narration || '',
+              debit_total: debitTotal,
+              credit_total: creditTotal,
+              company_id: compId,
+              updated_at: new Date().toISOString()
+            }
+          );
+
+          if (insertErr) {
+            return { success: false, error: insertErr.message };
+          }
+
+          if (entry.lines && entry.lines.length > 0) {
+            const lineRows = entry.lines.map((l, idx) => ({
+              id: `jl-${entryId}-${idx}`,
+              journal_id: entryId,
+              ledger_id: l.ledgerId || null,
+              ledger_name: l.ledgerName,
+              account_group: l.accountGroup || 'General',
+              debit: Number(l.debit || 0),
+              credit: Number(l.credit || 0),
+              particulars: l.particulars || ''
+            }));
+            await safeExecuteQuery(
+              (payload) => client.from('busy_ufo_journal_lines').insert(payload),
+              lineRows
+            );
+          }
+
+          return { success: true };
+        }
+
         return { success: false, error: error.message };
       }
 
@@ -2601,6 +4011,68 @@ export const SupabaseSyncService = {
       return { success: false, error: e?.message };
     } finally {
       _inFlightRequests.delete(reqId);
+    }
+  },
+
+  async updateJournalEntry(id: string, entry: JournalEntry, compId?: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+
+    try {
+      const targetCompId = compId || entry.companyId || 'comp-1';
+      const debitTotal = (entry.lines || []).reduce((acc, l) => acc + Number(l.debit || 0), 0);
+      const creditTotal = (entry.lines || []).reduce((acc, l) => acc + Number(l.credit || 0), 0);
+
+      const { error: updateErr } = await safeExecuteQuery(
+        (payload) => client.from('busy_ufo_journal_entries').update(payload).eq('id', id),
+        {
+          voucher_date: entry.voucherDate || new Date().toISOString().split('T')[0],
+          narration: entry.narration || '',
+          debit_total: debitTotal,
+          credit_total: creditTotal,
+          updated_at: new Date().toISOString()
+        }
+      );
+
+      if (updateErr) return { success: false, error: updateErr.message };
+
+      // Re-insert lines
+      await client.from('busy_ufo_journal_lines').delete().eq('journal_id', id);
+
+      if (entry.lines && entry.lines.length > 0) {
+        const lineRows = entry.lines.map((l, idx) => ({
+          id: `jl-${id}-${idx}`,
+          journal_id: id,
+          ledger_id: l.ledgerId || null,
+          ledger_name: l.ledgerName,
+          account_group: l.accountGroup || 'General',
+          debit: Number(l.debit || 0),
+          credit: Number(l.credit || 0),
+          particulars: l.particulars || ''
+        }));
+        await safeExecuteQuery(
+          (payload) => client.from('busy_ufo_journal_lines').insert(payload),
+          lineRows
+        );
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
+    }
+  },
+
+  async deleteJournalEntry(id: string, compId?: string): Promise<{ success: boolean; error?: string }> {
+    const client = getSupabaseClient();
+    if (!client) return { success: false, error: 'Supabase not configured' };
+
+    try {
+      await client.from('busy_ufo_journal_lines').delete().eq('journal_id', id);
+      const { error } = await client.from('busy_ufo_journal_entries').delete().eq('id', id);
+      if (error) return { success: false, error: error.message };
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message };
     }
   },
 

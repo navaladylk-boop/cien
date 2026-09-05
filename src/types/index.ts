@@ -307,6 +307,7 @@ export interface CustomerReceipt {
   notes?: string;
   allocations?: InvoiceAllocation[];
   unallocatedAmount?: number;
+  updatedAt?: string;
   createdAt: string;
 }
 
@@ -325,6 +326,7 @@ export interface SupplierPayment {
   notes?: string;
   allocations?: BillAllocation[];
   unallocatedAmount?: number;
+  updatedAt?: string;
   createdAt: string;
 }
 

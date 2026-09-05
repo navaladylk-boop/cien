@@ -5,6 +5,7 @@ import {
   Search,
   Printer,
   Eye,
+  Pencil,
   Trash2,
   Calendar,
   AlertCircle,
@@ -28,6 +29,7 @@ export const JournalManagement: React.FC<JournalManagementProps> = ({ currentCom
 
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingJournalId, setEditingJournalId] = useState<string | null>(null);
   const [viewingJournal, setViewingJournal] = useState<JournalEntry | null>(null);
 
   // Form state
@@ -147,6 +149,7 @@ export const JournalManagement: React.FC<JournalManagementProps> = ({ currentCom
   const isBalanced = difference < 0.01 && totalDebit > 0;
 
   const resetForm = () => {
+    setEditingJournalId(null);
     setVoucherDate(new Date().toISOString().split('T')[0]);
     setNarration('');
     setLines([
@@ -154,6 +157,33 @@ export const JournalManagement: React.FC<JournalManagementProps> = ({ currentCom
       { id: '2', ledgerId: '', ledgerName: '', particulars: '', debit: 0, credit: 0 }
     ]);
     setFeedback(null);
+  };
+
+  const handleEdit = (j: JournalEntry) => {
+    setEditingJournalId(j.id);
+    setVoucherDate(j.voucherDate);
+    setNarration(j.narration || '');
+    setLines(
+      (j.lines || []).map((l, i) => ({
+        id: l.id || String(i),
+        ledgerId: l.ledgerId,
+        ledgerName: l.ledgerName,
+        particulars: l.particulars || '',
+        debit: l.debit || 0,
+        credit: l.credit || 0
+      }))
+    );
+    setIsModalOpen(true);
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this journal entry?')) return;
+    const res = await StorageService.deleteJournalEntryAsync(id, currentCompanyId);
+    if (res.success) {
+      loadData();
+    } else {
+      alert(res.error || 'Failed to delete journal entry.');
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -178,9 +208,6 @@ export const JournalManagement: React.FC<JournalManagementProps> = ({ currentCom
     setIsSaving(true);
     setFeedback(null);
 
-    const count = journals.length + 1;
-    const voucherNo = `JV-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`;
-
     const formattedLines: JournalLine[] = lines.map((l, i) => ({
       id: l.id || `line-${i}`,
       ledgerId: l.ledgerId || l.ledgerName,
@@ -189,6 +216,33 @@ export const JournalManagement: React.FC<JournalManagementProps> = ({ currentCom
       credit: l.credit,
       particulars: l.particulars || narration
     }));
+
+    if (editingJournalId) {
+      const result = await StorageService.updateJournalEntryAsync(
+        editingJournalId,
+        {
+          voucherDate,
+          narration: narration || 'Manual double entry adjustment',
+          lines: formattedLines,
+          debitTotal: totalDebit,
+          creditTotal: totalCredit
+        },
+        currentCompanyId
+      );
+
+      setIsSaving(false);
+      if (result.success) {
+        loadData();
+        setIsModalOpen(false);
+        resetForm();
+      } else {
+        setFeedback({ type: 'error', message: result.error || 'Failed to update journal voucher.' });
+      }
+      return;
+    }
+
+    const count = journals.length + 1;
+    const voucherNo = `JV-${new Date().getFullYear()}-${String(count).padStart(4, '0')}`;
 
     const result = await StorageService.createJournalEntryAsync(
       {
@@ -320,6 +374,20 @@ export const JournalManagement: React.FC<JournalManagementProps> = ({ currentCom
                           className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors"
                         >
                           <Eye className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleEdit(j)}
+                          title="Edit JV"
+                          className="p-1.5 text-slate-500 hover:text-amber-600 hover:bg-slate-100 rounded-md transition-colors"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(j.id)}
+                          title="Delete JV"
+                          className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-md transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </td>
